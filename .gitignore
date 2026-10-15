@@ -1,0 +1,9 @@
+node_modules/
+.env*
+keys/
+*.pem
+*.bak*
+.deploy-body.json
+wallet*.json
+buyer*.json
+.vercel/
