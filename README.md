@@ -62,3 +62,5 @@ Risk and safety outputs are heuristics. They are not audits, security advice or 
 ## License
 
 MIT
+
+_Deployed automatically to Vercel from `main`._
