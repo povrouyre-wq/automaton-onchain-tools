@@ -27,6 +27,7 @@ const EX = { base: { tx: "0x45be0cb297d8e90038b2113ea608e7a80d84c5e8d9e9b649a2d1
   bsc: { tx: "0xa98a72c04fb6ae896f69aa5d4488bda5e9efc34ed9b69e51cfc5b6c09100fac2", token: "0x55d398326f99059fF775485246999027B3197955", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" } };
 
 // Route table: one fixed resource URL per endpoint.
+// Advertised patterns must be RE2-compatible (CDP Bazaar): no {m,n} repeat counts > 1000; use maxLength instead.
 const ROUTES = [];
 for (const [c, C] of Object.entries(CHAINS)) {
   const N = C.name, legacy = c === "base"; // keep original Base tool names
@@ -44,7 +45,7 @@ for (const [c, C] of Object.entries(CHAINS)) {
       desc: `Heuristic risk flags for a ${N} contract from free public data: Sourcify verification, upgradeable proxy + admin, owner type, mint/pause/blacklist/fee selectors, bytecode size. Not an audit or financial advice.`,
       out: { riskLevel: "medium", heuristicScore: 5, sourcify: { contract: { verified: true } }, proxy: { standard: "EIP-1967" }, ownerType: "eoa", capabilities: { mint: ["mint(address,uint256)"] }, findings: [{ severity: "medium", note: "Mint function present" }], disclaimer: "..." } });
 }
-ROUTES.push({ key: "url_safety_check", path: "/v1/url-safety", param: "url", re: URLRE, pattern: "^.{4,2048}$", price: PRICE_SMALL, fn: async v => { const r = await urlSafety(v); if (!r) throw Object.assign(new Error("invalid http(s) URL"), { status: 400 }); return r; },
+ROUTES.push({ key: "url_safety_check", path: "/v1/url-safety", param: "url", re: URLRE, pattern: "^.{4,}$", maxLen: 2048, price: PRICE_SMALL, fn: async v => { const r = await urlSafety(v); if (!r) throw Object.assign(new Error("invalid http(s) URL"), { status: 400 }); return r; },
   name: "URL Safety Check", pdesc: "http(s) URL or hostname", example: "https://example.com/login",
   desc: "Check a URL for phishing/scam signals: MetaMask eth-phishing-detect + Phishing.Database blocklists, RDAP domain age, punycode and brand-lookalike detection, HTTPS reachability. Heuristic; not security advice.",
   out: { host: "example.com", verdict: "no known issues", score: 0, signals: [], blocklists: { metamask: false, phishingDatabase: false }, domainAge: { ageDays: 11000 } } });
@@ -56,7 +57,7 @@ ROUTES.push(
   { key: "ens_resolve", path: "/v1/ens", param: "name", re: /^(0x[0-9a-fA-F]{40}|[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,})$/, pattern: "^(0x[0-9a-fA-F]{40}|[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})$", price: PRICE_SMALL, fn: v => ensResolve(v), name: "ENS / Basename Resolver", pdesc: "ENS or Basename (vitalik.eth, jesse.base.eth) or 0x address for reverse lookup", example: "vitalik.eth", tag: "ens",
     desc: "Resolve an ENS name or Basename to an address (plus url/twitter/github text records), or reverse-resolve an address to its primary name.",
     out: { name: "vitalik.eth", address: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", textRecords: { url: "https://vitalik.ca" } } },
-  { key: "calldata_decode", path: "/v1/decode", param: "data", re: /^0x[0-9a-fA-F]{8}([0-9a-fA-F]{2}){0,4000}$/, pattern: "^0x[0-9a-fA-F]{8,8008}$", price: PRICE_SMALL, fn: v => decodeCalldata(v), name: "Calldata Decoder + Signing Warnings", pdesc: "hex calldata (0x + selector + args)", example: "0x095ea7b3000000000000000000000000000000000022d473030f116ddee9f6b43ac78ba3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", tag: "decode",
+  { key: "calldata_decode", path: "/v1/decode", param: "data", re: /^0x[0-9a-fA-F]{8}([0-9a-fA-F]{2}){0,4000}$/, pattern: "^0x[0-9a-fA-F]{8,}$", maxLen: 8010, price: PRICE_SMALL, fn: v => decodeCalldata(v), name: "Calldata Decoder + Signing Warnings", pdesc: "hex calldata (0x + selector + args)", example: "0x095ea7b3000000000000000000000000000000000022d473030f116ddee9f6b43ac78ba3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", tag: "decode",
     desc: "Decode EVM calldata before signing: function signature candidates (openchain DB), decoded args, and plain-English warnings for approve/setApprovalForAll/permit/unlimited amounts.",
     out: { selector: "0x095ea7b3", bestMatch: { signature: "approve(address,uint256)", args: ["0x...", "115792..."] }, warnings: ["Unlimited approval amount"] } },
   { key: "wallet_portfolio", path: "/v1/portfolio", param: "address", re: ADDR, pattern: AP, price: PRICE, fn: v => portfolio(v), name: "Multi-chain Wallet Portfolio", pdesc: "EVM wallet address", example: EX.ethereum.wallet, tag: "portfolio",
@@ -89,7 +90,7 @@ for (const r of ROUTES) routeCfg["GET " + r.path] = {
   accepts: [{ scheme: "exact", price: r.price, network: NETWORK, payTo: PAY_TO }], description: r.desc, mimeType: "application/json",
   resource: ORIGIN + r.path, serviceName: r.name, tags: r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"],
   extensions: { ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example },
-    inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, description: r.pdesc } }, required: [r.param] }, output: { example: r.out } }) } };
+    inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc } }, required: [r.param] }, output: { example: r.out } }) } };
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
   try { res.json(await r.fn(req.query[r.param])); }
@@ -116,7 +117,7 @@ async function buildMcp() {
   for (const r of ROUTES) wrap[r.key] = createPaymentWrapper(server, {
     accepts: await server.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo: PAY_TO, price: r.price }),
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
-    extensions: declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, description: r.pdesc } }, required: [r.param] }, example: { [r.param]: r.example } }) });
+    extensions: declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc } }, required: [r.param] }, example: { [r.param]: r.example } }) });
   return () => {
     const m = new McpServer({ name: "automaton-onchain-tools", version: "1.3.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
