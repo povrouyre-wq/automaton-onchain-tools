@@ -10,6 +10,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createPaymentWrapper } from "@x402/mcp";
 import { z } from "zod";
 import { mountLanding } from "./landing.js";
+import { walletReport, tokenReport } from "./reports.js";
 import { CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -64,6 +65,17 @@ ROUTES.push(
     desc: "Wallet snapshot across Base, Ethereum and BNB Smart Chain: native balance plus balances of 8 major tokens per chain (USDC, USDT, WETH, DAI, WBTC/cbBTC...). No USD pricing.",
     out: { chains: [{ chain: "base", native: { symbol: "ETH", balance: "0.01" }, tokens: [{ symbol: "USDC", balance: "12.5" }] }] } });
 
+const PRICE_PREMIUM = process.env.PRICE_PREMIUM || "$0.25";
+const CHAIN_RE = /^(base|ethereum|bsc)$/;
+ROUTES.push(
+  { key: "wallet_report", path: "/v1/wallet-report", param: "address", re: ADDR, pattern: AP, price: PRICE_PREMIUM, fn: v => walletReport(v), name: "Wallet Security Report (premium)", pdesc: "EVM wallet address", example: EX.ethereum.wallet, tag: "report",
+    desc: "Premium one-call wallet report across Base, Ethereum and BNB Smart Chain: balances, token approvals (flags unlimited), address type/EIP-7702 delegation, and a plain-English risk summary with findings.",
+    out: { type: "wallet-report", riskLevel: "medium", summary: "Active on Base, Ethereum. Holds 12.5 USDC on Base. 2 open token approval(s), 1 unlimited. Worth reviewing the approvals above.", findings: [{ severity: "medium", note: "Base: UNLIMITED USDC approval to Permit2." }] } },
+  { key: "token_report", path: "/v1/token-report", param: "address", re: ADDR, pattern: AP, price: PRICE_PREMIUM, fn: (v, q) => tokenReport(v, q.chain || "base"), name: "Token Due-Diligence Report (premium)", pdesc: "token/contract address", example: EX.base.token, tag: "report",
+    extra: { name: "chain", re: CHAIN_RE, pattern: "^(base|ethereum|bsc)$", desc: "base | ethereum | bsc (default base)", example: "base" },
+    desc: "Premium one-call token due-diligence on Base, Ethereum or BNB Smart Chain: token metadata, proxy/upgradeability, owner and admin, owner/dead/self balances as % of supply, Sourcify verification, mint/pause/blacklist/fee flags, plain-English summary.",
+    out: { type: "token-report", riskLevel: "medium", summary: "USD Coin (USDC), an ERC-20 on Base... It is upgradeable (EIP-1967)...", holders: { owner: "0x...", ownerBalance: { pctOfSupply: 0 } }, findings: [] } });
+
 const app = express();
 app.set("trust proxy", true);
 const server = new x402ResourceServer(new HTTPFacilitatorClient(facCfg)).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension);
@@ -82,6 +94,7 @@ for (const r of ROUTES) app.get(r.path, (req, res, next) => {
   const v = req.query[r.param];
   if (v === undefined && !hasPay(req)) return next();
   if (typeof v !== "string" || !r.re.test(v)) return res.status(400).json({ error: `query param ${r.param} must match ${r.pattern}` });
+  if (r.extra && req.query[r.extra.name] !== undefined && (typeof req.query[r.extra.name] !== "string" || !r.extra.re.test(req.query[r.extra.name]))) return res.status(400).json({ error: `query param ${r.extra.name} must match ${r.extra.pattern}` });
   if (r.param === "url") { try { const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : "https://" + v); if (!["http:", "https:"].includes(u.protocol)) throw 0; } catch { return res.status(400).json({ error: "url must be an http(s) URL or hostname" }); } }
   next();
 });
@@ -89,22 +102,22 @@ const routeCfg = {};
 for (const r of ROUTES) routeCfg["GET " + r.path] = {
   accepts: [{ scheme: "exact", price: r.price, network: NETWORK, payTo: PAY_TO }], description: r.desc, mimeType: "application/json",
   resource: ORIGIN + r.path, serviceName: r.name, tags: r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"],
-  extensions: { ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example },
-    inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc } }, required: [r.param] }, output: { example: r.out } }) } };
+  extensions: { ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) },
+    inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, output: { example: r.out } }) } };
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
-  try { res.json(await r.fn(req.query[r.param])); }
+  try { res.json(await r.fn(req.query[r.param], req.query)); }
   catch (e) { res.status(e.status || 404).json({ error: e.status === 400 ? e.message : "not found or upstream error", detail: String(e.shortMessage || e.message).slice(0, 300) }); }
 });
 
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.3.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus URL safety checks.",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.4.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, URL safety checks, plus $0.25 premium wallet and token reports.",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,
     "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: r.price.replace("$", "") }, protocols: [{ x402: {} }] },
-    parameters: [{ name: r.param, in: "query", required: true, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }],
+    parameters: [{ name: r.param, in: "query", required: true, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }, ...(r.extra ? [{ name: r.extra.name, in: "query", required: false, description: r.extra.desc, schema: { type: "string", pattern: r.extra.pattern } }] : [])],
     responses: { 200: { description: "OK", content: { "application/json": { schema: { type: "object" }, example: r.out } } }, 400: { description: "Invalid input (no charge)" }, 402: { description: "Payment Required" } } } }])) }));
 app.get("/.well-known/mcp-registry-auth", (_, res) => res.type("text/plain").send("v=MCPv1; k=ed25519; p=Gkkq+F+PxBJofd16J+xJpg6E+nXM7MWO29cD3+IKe0U="));
 app.get("/.well-known/x402", (_, res) => res.json({ version: 1, resources: ROUTES.map(r => ORIGIN + r.path) }));
@@ -117,12 +130,12 @@ async function buildMcp() {
   for (const r of ROUTES) wrap[r.key] = createPaymentWrapper(server, {
     accepts: await server.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo: PAY_TO, price: r.price }),
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
-    extensions: declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc } }, required: [r.param] }, example: { [r.param]: r.example } }) });
+    extensions: declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) });
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.3.0" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.4.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
-      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: zz }, wrap[r.key](async a => { try { return txt(await r.fn(a[r.param])); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
+      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await r.fn(a[r.param], a)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
     m.tool("ping", "Free health check.", {}, async () => txt({ ok: true }));
     return m;
   };

@@ -3,7 +3,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
 export function mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }) {
   const REPO = "https://github.com/povrouyre-wq/automaton-onchain-tools";
   const TITLE = "Automaton Onchain Tools: pay-per-call crypto APIs for AI agents (x402)";
-  const DESC = `${ROUTES.length} pay-per-call APIs for AI agents: transaction explainer, token approvals, address inspector, contract risk, wallet portfolio, gas snapshot, ENS resolver, calldata decoder and URL phishing check across Base, Ethereum and BNB Smart Chain. $0.005-$0.01 in USDC via x402. No signup, no API key. MCP server included.`;
+  const DESC = `${ROUTES.length} pay-per-call APIs for AI agents: transaction explainer, token approvals, address inspector, contract risk, wallet portfolio, gas snapshot, ENS resolver, calldata decoder, URL phishing check, plus premium wallet and token due-diligence reports across Base, Ethereum and BNB Smart Chain. $0.005-$0.01 per call ($0.25 for premium reports) in USDC via x402. No signup, no API key. MCP server included.`;
   const groups = {}; for (const r of ROUTES) { const m = r.path.match(/^\/v1\/(base|ethereum|bsc)\/(.+)$/); const k = m ? m[2] : r.path; (groups[k] ||= { r, chains: [] }); if (m) groups[k].chains.push(m[1]); }
   const CN = { base: "Base", ethereum: "Ethereum", bsc: "BNB" };
   const cards = Object.values(groups).map(({ r, chains }) => `<div class="card"><div class="ch"><h3>${esc(r.name.replace(/^(Base|Ethereum|BNB Smart Chain) /, ""))}</h3><span class="price">${esc(r.price)}</span></div>
@@ -45,7 +45,7 @@ footer{border-top:1px solid var(--ln);margin-top:64px;padding:28px 0;color:var(-
 <div class="w"><nav><div class="logo">◆ <b>Automaton</b> Onchain Tools</div><div class="l"><a href="#tools">Tools</a><a href="#start">Quick start</a><a href="/openapi.json">API</a><a href="${REPO}">GitHub</a></div></nav></div>
 <header class="hero"><div class="w"><div class="pill">x402 · MCP · USDC on Base</div>
 <h1>Onchain intelligence,<br><span>pay-per-call for AI agents</span></h1>
-<p class="sub">${ROUTES.length} crypto and security APIs your agent can call instantly. Pay $0.005–$0.01 per call in USDC on Base via x402. No signup, no API key, no subscription.</p>
+<p class="sub">${ROUTES.length} crypto and security APIs your agent can call instantly. Pay $0.005–$0.01 per call, or $0.25 for a full wallet or token report, in USDC on Base via x402. No signup, no API key, no subscription.</p>
 <div class="btns"><a class="b1" href="#start">Get started</a><a class="b2" href="${REPO}">View source</a></div></div></header>
 <main class="w">
 <h2 id="tools">Tools</h2><div class="grid">${cards}</div>
@@ -78,7 +78,7 @@ console.log(await r.json());</pre></div>
 <footer><div class="w"><a href="${REPO}">GitHub</a><a href="/openapi.json">OpenAPI</a><a href="/llms.txt">llms.txt</a><a href="/.well-known/x402">x402 discovery</a><a href="/health">Health</a>
 <p>Risk and safety outputs are heuristics, not audits, security advice or financial advice. Operated by an autonomous agent ("Automaton").</p></div></footer>
 </body></html>`;
-  const llms = `# Automaton Onchain Tools\n\n> ${DESC}\n\nPayment: x402 v2, exact scheme, USDC on Base (eip155:8453), payTo ${PAY_TO}. Request without payment returns 402 with requirements; retry with PAYMENT-SIGNATURE header. Invalid input returns 400 free.\n\n## Docs\n- [OpenAPI](${ORIGIN}/openapi.json)\n- [x402 discovery](${ORIGIN}/.well-known/x402)\n- [Health/endpoint list JSON](${ORIGIN}/health)\n- MCP (streamable HTTP, POST): ${ORIGIN}/mcp\n\n## Endpoints\n${ROUTES.map(r => `- GET ${ORIGIN}${r.path}?${r.param}=<${r.param}> (${r.price}): ${r.desc}`).join("\n")}\n`;
+  const llms = `# Automaton Onchain Tools\n\n> ${DESC}\n\nPayment: x402 v2, exact scheme, USDC on Base (eip155:8453), payTo ${PAY_TO}. Request without payment returns 402 with requirements; retry with PAYMENT-SIGNATURE header. Invalid input returns 400 free.\n\n## Docs\n- [OpenAPI](${ORIGIN}/openapi.json)\n- [x402 discovery](${ORIGIN}/.well-known/x402)\n- [Health/endpoint list JSON](${ORIGIN}/health)\n- MCP (streamable HTTP, POST): ${ORIGIN}/mcp\n\n## Endpoints\n${ROUTES.map(r => `- GET ${ORIGIN}${r.path}?${r.param}=<${r.param}>${r.extra ? `&${r.extra.name}=<${r.extra.name}>` : ""} (${r.price}): ${r.desc}`).join("\n")}\n`;
   const card = { name: "Automaton Onchain Tools", description: DESC, url: ORIGIN, version: "1.3.0", documentationUrl: REPO, provider: { organization: "Automaton", url: ORIGIN },
     capabilities: {}, defaultInputModes: ["application/json"], defaultOutputModes: ["application/json"],
     skills: ROUTES.map(r => ({ id: r.key, name: r.name, description: `${r.desc} Price ${r.price} via x402.`, tags: ["x402", "crypto", r.param === "url" ? "security" : "onchain"] })),
