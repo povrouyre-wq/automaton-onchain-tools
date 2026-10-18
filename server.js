@@ -5,6 +5,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import { BUILDER_CODE, declareBuilderCodeExtension, builderCodeResourceServerExtension } from "@x402/extensions/builder-code";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createPaymentWrapper } from "@x402/mcp";
@@ -17,6 +18,9 @@ export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensR
 const PAY_TO = process.env.PAY_TO || "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717";
 const NETWORK = process.env.X402_NETWORK || "eip155:84532"; // Base Sepolia testnet by default
 const FACILITATOR = process.env.FACILITATOR_URL || "https://x402.org/facilitator";
+// Base Builder Code (ERC-8021): declared as app code `a` in every 402; the facilitator appends it to settlement calldata.
+const BUILDER = process.env.BUILDER_CODE || "bc_a1qq0mzd";
+const builderExt = { [BUILDER_CODE]: declareBuilderCodeExtension(BUILDER) };
 const facCfg = FACILITATOR === "cdp" ? createFacilitatorConfig(process.env.CDP_API_KEY_ID, process.env.CDP_API_KEY_SECRET) : { url: FACILITATOR };
 const PRICE = process.env.PRICE || "$0.01";
 const PRICE_SMALL = process.env.PRICE_SMALL || "$0.005";
@@ -78,7 +82,7 @@ ROUTES.push(
 
 const app = express();
 app.set("trust proxy", true);
-const server = new x402ResourceServer(new HTTPFacilitatorClient(facCfg)).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension);
+const server = new x402ResourceServer(new HTTPFacilitatorClient(facCfg)).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
 server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it, so the facilitator can catalog
   const p = ctx?.paymentPayload; if (!p || p.resource?.url) return;
   const tc = ctx.transportContext || {}; const path = tc.request?.path || tc.adapter?.getPath?.() || tc.path || "";
@@ -102,7 +106,7 @@ const routeCfg = {};
 for (const r of ROUTES) routeCfg["GET " + r.path] = {
   accepts: [{ scheme: "exact", price: r.price, network: NETWORK, payTo: PAY_TO }], description: r.desc, mimeType: "application/json",
   resource: ORIGIN + r.path, serviceName: r.name, tags: r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"],
-  extensions: { ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) },
+  extensions: { ...builderExt, ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) },
     inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, output: { example: r.out } }) } };
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
@@ -130,7 +134,7 @@ async function buildMcp() {
   for (const r of ROUTES) wrap[r.key] = createPaymentWrapper(server, {
     accepts: await server.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo: PAY_TO, price: r.price }),
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
-    extensions: declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) });
+    extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
   return () => {
     const m = new McpServer({ name: "automaton-onchain-tools", version: "1.4.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
