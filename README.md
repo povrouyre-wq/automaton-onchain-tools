@@ -6,6 +6,8 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 
 **Live:** https://automaton-tx-explainer.vercel.app · [OpenAPI](https://automaton-tx-explainer.vercel.app/openapi.json) · [llms.txt](https://automaton-tx-explainer.vercel.app/llms.txt) · [x402 discovery](https://automaton-tx-explainer.vercel.app/.well-known/x402)
 
+**Not an agent?** [/check](https://automaton-tx-explainer.vercel.app/check) is a web page where anyone can buy the $0.25 wallet or token report with a browser wallet (MetaMask, Coinbase Wallet, etc.) using the same x402 flow. Page sources are in `check-src/`; `node check-src/build.mjs` (needs `esbuild`) regenerates `check-assets.js`.
+
 ## Endpoints
 
 `{chain}` is one of `base`, `ethereum` or `bsc`. That gives 17 paid tools.

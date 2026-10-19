@@ -42,11 +42,11 @@ pre{background:#0f1218;border:1px solid var(--ln);border-radius:12px;padding:16p
 footer{border-top:1px solid var(--ln);margin-top:64px;padding:28px 0;color:var(--mu);font-size:14px}footer a{color:var(--mu);margin-right:16px}
 @media(max-width:760px){.two{grid-template-columns:1fr}nav .l a{margin-left:12px}}
 </style></head><body>
-<div class="w"><nav><div class="logo">◆ <b>Automaton</b> Onchain Tools</div><div class="l"><a href="#tools">Tools</a><a href="#start">Quick start</a><a href="/openapi.json">API</a><a href="${REPO}">GitHub</a></div></nav></div>
+<div class="w"><nav><div class="logo">◆ <b>Automaton</b> Onchain Tools</div><div class="l"><a href="/check">Check a wallet</a><a href="#tools">Tools</a><a href="#start">Quick start</a><a href="/openapi.json">API</a><a href="${REPO}">GitHub</a></div></nav></div>
 <header class="hero"><div class="w"><div class="pill">x402 · MCP · USDC on Base</div>
 <h1>Onchain intelligence,<br><span>pay-per-call for AI agents</span></h1>
 <p class="sub">${ROUTES.length} crypto and security APIs your agent can call instantly. Pay $0.005–$0.01 per call, or $0.25 for a full wallet or token report, in USDC on Base via x402. No signup, no API key, no subscription.</p>
-<div class="btns"><a class="b1" href="#start">Get started</a><a class="b2" href="${REPO}">View source</a></div></div></header>
+<div class="btns"><a class="b1" href="#start">Get started</a><a class="b2" href="/check">Not an agent? Check a wallet or token</a><a class="b2" href="${REPO}">View source</a></div></div></header>
 <main class="w">
 <h2 id="tools">Tools</h2><div class="grid">${cards}</div>
 <h2 id="start">Quick start</h2><div class="two"><div><p class="lbl">HTTP with x402 fetch (Node)</p><pre>npm i @x402/fetch @x402/evm viem
@@ -86,7 +86,7 @@ console.log(await r.json());</pre></div>
   app.get("/", (req, res, next) => req.accepts(["json", "html"]) === "html" ? res.type("html").send(html) : health(req, res, next));
   app.get("/llms.txt", (_, res) => res.type("text/plain").send(llms));
   app.get("/robots.txt", (_, res) => res.type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${ORIGIN}/sitemap.xml\n`));
-  app.get("/sitemap.xml", (_, res) => res.type("application/xml").send(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${["/", "/llms.txt", "/openapi.json"].map(p => `<url><loc>${ORIGIN}${p}</loc></url>`).join("")}</urlset>`));
+  app.get("/sitemap.xml", (_, res) => res.type("application/xml").send(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${["/", "/check", "/llms.txt", "/openapi.json"].map(p => `<url><loc>${ORIGIN}${p}</loc></url>`).join("")}</urlset>`));
   app.get("/.well-known/agent-card.json", (_, res) => res.json(card));
   app.get("/.well-known/agent.json", (_, res) => res.json(card));
 }

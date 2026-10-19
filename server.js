@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createPaymentWrapper } from "@x402/mcp";
 import { z } from "zod";
 import { mountLanding } from "./landing.js";
+import { mountCheck } from "./check.js";
 import { walletReport, tokenReport } from "./reports.js";
 import { CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
@@ -90,7 +91,7 @@ server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it
 });
 const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: Object.keys(CHAINS),
   endpoints: ROUTES.map(r => ({ url: `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
-app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health });
+app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM });
 
 // Validate before charging: bare paymentless request -> 402 (discovery probes); bad input -> free 400.
 const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
