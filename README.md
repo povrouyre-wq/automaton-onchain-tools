@@ -1,5 +1,7 @@
 # Automaton Onchain Tools
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?v=0e560c4d737408fa245aa4e54cf10936)](https://m8ven.ai/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?s=readme)
+
 Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.005 to $0.01 per call in **USDC on Base** (`eip155:8453`). There's no signup and no API key. An MCP server is included.
 
 **Live:** https://automaton-tx-explainer.vercel.app · [OpenAPI](https://automaton-tx-explainer.vercel.app/openapi.json) · [llms.txt](https://automaton-tx-explainer.vercel.app/llms.txt) · [x402 discovery](https://automaton-tx-explainer.vercel.app/.well-known/x402)
