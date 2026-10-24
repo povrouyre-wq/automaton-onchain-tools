@@ -116,6 +116,11 @@ for (const r of ROUTES) routeCfg["GET " + r.path] = {
   resource: ORIGIN + r.path, serviceName: r.name, tags: r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"],
   extensions: { ...builderExt, ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) },
     inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, output: { example: r.out } }) } };
+// Mirror the PAYMENT-REQUIRED header into the 402 body (it is otherwise "{}") so indexers and clients that read the body (x402 v1 style) see the same accepts[].
+app.use((req, res, next) => { if (!req.path.startsWith("/v1/")) return next(); const end = res.end;
+  res.end = function (chunk, ...rest) { try { if (res.statusCode === 402 && !res.headersSent && (!chunk || String(chunk) === "{}")) { const h = res.getHeader("payment-required");
+    if (h) { chunk = Buffer.from(String(h), "base64").toString("utf8"); res.setHeader("content-type", "application/json; charset=utf-8"); res.setHeader("content-length", Buffer.byteLength(chunk)); } } } catch {}
+    return end.call(this, chunk, ...rest); }; next(); });
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
   try { res.json(await r.fn(req.query[r.param], req.query)); }
