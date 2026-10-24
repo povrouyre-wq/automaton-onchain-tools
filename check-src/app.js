@@ -14,16 +14,16 @@
 
   function eth() { return window.ethereum || null; }
   function setStatus(html, cls = "") { const s = $("status"); s.className = "status " + cls; s.innerHTML = html; s.hidden = !html; }
-  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k !== "token";
-    $("addrLabel").textContent = k === "token" ? "Token contract address" : "Wallet address";
-    $("addr").placeholder = k === "token" ? "0x… token contract" : "0x… wallet"; reset(); }
+  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet";
+    $("addrLabel").textContent = k !== "wallet" ? "Token contract address" : "Wallet address";
+    $("addr").placeholder = k !== "wallet" ? "0x… token contract" : "0x… wallet"; reset(); }
   function reset() { state.pr = null; $("payBox").hidden = true; $("report").hidden = true; setStatus(""); }
 
   function buildUrl() {
     const kind = document.querySelector("input[name=kind]:checked").value, a = $("addr").value.trim(), chain = $("chain").value;
     if (!ADDR.test(a)) return { err: "That doesn't look like an address. It should start with 0x followed by 40 hex characters. ENS names aren't supported here." };
-    const u = kind === "token" ? `/v1/token-report?address=${a}&chain=${chain}` : `/v1/wallet-report?address=${a}`;
-    return { url: u, kind, chain: kind === "token" ? chain : null, addr: a };
+    const u = kind === "deep" ? `/v1/token/deep-scan?address=${a}&chain=${chain}` : kind === "token" ? `/v1/token-report?address=${a}&chain=${chain}` : `/v1/wallet-report?address=${a}`;
+    return { url: u, kind, chain: kind !== "wallet" ? chain : null, addr: a };
   }
 
   async function getQuote(ev) {
@@ -40,7 +40,7 @@
       if (!acc) return setStatus("No Base USDC payment option offered.", "err");
       state = { ...state, pr, url: b.url, kind: b.kind, chain: b.chain };
       $("qPrice").textContent = fmtUsdc(acc.amount) + " USDC";
-      $("qWhat").textContent = b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
+      $("qWhat").textContent = b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
       $("qPayTo").textContent = acc.payTo; $("qPayTo").href = "https://basescan.org/address/" + acc.payTo;
       $("payBox").hidden = false; setStatus("");
       updateWalletUi();
@@ -151,12 +151,27 @@
     ];
     return `<h3>Key facts</h3><table><tbody>${facts.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>`;
   }
+  function deepHtml(r) {
+    const S = r.honeypotSimulation || {}, L = r.liquidity || {}, M = L.mainPool, H = r.holders || {}, O = r.ownerPowers || {};
+    const ex = EXPLORER[r.chain] || EXPLORER.base, link = a => a ? `<a href="${ex}/address/${esc(a)}" target=_blank rel=noopener>${esc(short(a))}</a>` : "n/a";
+    const sell = S.ran ? (S.canSell ? `<b style="color:var(--ok)">Yes</b> (buy tax ${esc(S.buyTaxPct)}%, sell tax ${esc(S.sellTaxPct)}%, round trip returned ${esc(S.roundTripReturnPct)}%)` : `<b class=bad>NO</b>: ${esc(S.failedAt)}${S.revertReason ? " (" + esc(S.revertReason) + ")" : ""}`) : `<span class=muted>Not simulated: ${esc(S.reason)}</span>`;
+    let h = `<h3>Honeypot test</h3><table><tbody><tr><td>Can sell after buying?</td><td>${sell}</td></tr>${S.ran ? `<tr><td>Simulated on</td><td>${esc(S.dex)} ${link(S.pool)}, trade ${esc(S.tradeSize)}</td></tr>` : ""}</tbody></table>`;
+    h += `<h3>Liquidity</h3>` + (M ? `<table><tbody><tr><td>Main pool</td><td>${esc(M.dex)} · ${esc(M.pairedWith)} · ${link(M.address)}</td></tr><tr><td>Size</td><td>${M.approxTotalUsd != null ? "~$" + Number(M.approxTotalUsd).toLocaleString() : esc(M.quoteSideReserve) + " " + esc(M.pairedWith) + " paired side"}</td></tr>
+      <tr><td>LP burned / locked</td><td>${esc(L.lp?.verdict || L.lp?.note || "n/a")}</td></tr><tr><td>Pools found</td><td>${esc(L.poolsFound)}</td></tr></tbody></table>` : `<p class=muted>${esc(L.coverage || "No pool found.")}</p>`);
+    if (H.available) { h += `<h3>Holders ${H.partial ? "<small class=muted>(partial: recently active addresses)</small>" : ""}</h3><p>Top 10 own <b>${esc(H.top10Pct)}%</b> of supply (${esc(H.top10ExcludingPoolsAndBurnPct)}% excluding pools and burn addresses)${H.holderCount ? ` · ${Number(H.holderCount).toLocaleString()} holders` : ""}.</p>
+      <table><thead><tr><th>Holder</th><th>% supply</th><th>Note</th></tr></thead><tbody>${(H.top || []).slice(0, 10).map(x => `<tr><td>${link(x.address)}</td><td>${esc(x.pctOfSupply)}%</td><td>${esc(x.label || (x.isContract ? "contract" : ""))}</td></tr>`).join("")}</tbody></table>`; }
+    else h += `<h3>Holders</h3><p class=muted>${esc(H.reason || "n/a")}</p>`;
+    const caps = Object.keys(O.capabilities || {}).filter(k => k !== "ownership").join(", ") || "none detected";
+    h += `<h3>Owner powers</h3><table><tbody><tr><td>Owner</td><td>${O.owner === "0x0000000000000000000000000000000000000000" ? "Renounced" : O.owner ? link(O.owner) + " (" + esc(O.ownerType) + ")" : "No owner() found"}</td></tr><tr><td>Upgradeable</td><td>${O.proxy ? "Yes (" + esc(O.proxy.standard) + ")" : "No"}</td></tr><tr><td>Admin functions</td><td>${esc(caps)}</td></tr></tbody></table>`;
+    if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
+    return h;
+  }
   function render(r, tx) {
     const lvl = String(r.riskLevel || "n/a").toLowerCase();
     $("report").innerHTML = `<div class=rhead><span class="risk ${esc(lvl)}">Risk: ${esc(lvl)}</span>
-      <span class=muted>${r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address))}</span></div>
+      <span class=muted>${r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address))}</span></div>
       <p class=summary>${esc(r.summary)}</p><h3>Findings</h3>${findingsHtml(r.findings)}
-      ${r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
+      ${r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
       <p class="muted small">${esc(r.disclaimer || "")}</p>
       ${tx ? `<p class="muted small">Paid: <a href="https://basescan.org/tx/${esc(tx)}" target=_blank rel=noopener>view payment on Basescan</a></p>` : ""}
       <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
@@ -174,7 +189,7 @@
   $("addr").addEventListener("input", reset); $("chain").addEventListener("change", reset);
   $("form").addEventListener("submit", getQuote); $("connectBtn").addEventListener("click", connect); $("payBtn").addEventListener("click", pay);
   const q = new URLSearchParams(location.search);
-  if (q.get("type") === "token") document.querySelector("input[value=token]").checked = true;
+  if (["token", "deep"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
   if (q.get("chain") && CN[q.get("chain")]) $("chain").value = q.get("chain");
   syncKind(); if (q.get("address")) $("addr").value = q.get("address");
   mobileLinks(); updateWalletUi();

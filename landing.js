@@ -3,7 +3,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
 export function mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }) {
   const REPO = "https://github.com/povrouyre-wq/automaton-onchain-tools";
   const TITLE = "Automaton Onchain Tools: pay-per-call crypto APIs for AI agents (x402)";
-  const DESC = `${ROUTES.length} pay-per-call APIs for AI agents: transaction explainer, token approvals, address inspector, contract risk, wallet portfolio, gas snapshot, ENS resolver, calldata decoder, URL phishing check, plus premium wallet and token due-diligence reports across Base, Ethereum and BNB Smart Chain. $0.005-$0.01 per call ($0.25 for premium reports) in USDC via x402. No signup, no API key. MCP server included.`;
+  const DESC = `${ROUTES.length} pay-per-call APIs for AI agents: transaction explainer, token approvals, address inspector, contract risk, wallet portfolio, gas snapshot, ENS resolver, calldata decoder, URL phishing check, plus premium wallet and token due-diligence reports and a token deep scan with honeypot buy/sell simulation across Base, Ethereum and BNB Smart Chain. $0.005-$0.01 per call ($0.25 for premium reports, $1.50 for the deep scan) in USDC via x402. No signup, no API key. MCP server included.`;
   const groups = {}; for (const r of ROUTES) { const m = r.path.match(/^\/v1\/(base|ethereum|bsc)\/(.+)$/); const k = m ? m[2] : r.path; (groups[k] ||= { r, chains: [] }); if (m) groups[k].chains.push(m[1]); }
   const CN = { base: "Base", ethereum: "Ethereum", bsc: "BNB" };
   const cards = Object.values(groups).map(({ r, chains }) => `<div class="card"><div class="ch"><h3>${esc(r.name.replace(/^(Base|Ethereum|BNB Smart Chain) /, ""))}</h3><span class="price">${esc(r.price)}</span></div>
@@ -45,7 +45,7 @@ footer{border-top:1px solid var(--ln);margin-top:64px;padding:28px 0;color:var(-
 <div class="w"><nav><div class="logo">◆ <b>Automaton</b> Onchain Tools</div><div class="l"><a href="/check">Check a wallet</a><a href="#tools">Tools</a><a href="#start">Quick start</a><a href="/openapi.json">API</a><a href="${REPO}">GitHub</a></div></nav></div>
 <header class="hero"><div class="w"><div class="pill">x402 · MCP · USDC on Base</div>
 <h1>Onchain intelligence,<br><span>pay-per-call for AI agents</span></h1>
-<p class="sub">${ROUTES.length} crypto and security APIs your agent can call instantly. Pay $0.005–$0.01 per call, or $0.25 for a full wallet or token report, in USDC on Base via x402. No signup, no API key, no subscription.</p>
+<p class="sub">${ROUTES.length} crypto and security APIs your agent can call instantly. Pay $0.005–$0.01 per call, $0.25 for a full wallet or token report, or $1.50 for a token deep scan (honeypot sim, liquidity, holders), in USDC on Base via x402. No signup, no API key, no subscription.</p>
 <div class="btns"><a class="b1" href="#start">Get started</a><a class="b2" href="/check">Not an agent? Check a wallet or token</a><a class="b2" href="${REPO}">View source</a></div></div></header>
 <main class="w">
 <h2 id="tools">Tools</h2><div class="grid">${cards}</div>

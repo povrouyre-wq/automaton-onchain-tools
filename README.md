@@ -6,11 +6,11 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 
 **Live:** https://automaton-tx-explainer.vercel.app · [OpenAPI](https://automaton-tx-explainer.vercel.app/openapi.json) · [llms.txt](https://automaton-tx-explainer.vercel.app/llms.txt) · [x402 discovery](https://automaton-tx-explainer.vercel.app/.well-known/x402)
 
-**Not an agent?** [/check](https://automaton-tx-explainer.vercel.app/check) is a web page where anyone can buy the $0.25 wallet or token report with a browser wallet (MetaMask, Coinbase Wallet, etc.) using the same x402 flow. Page sources are in `check-src/`; `node check-src/build.mjs` (needs `esbuild`) regenerates `check-assets.js`.
+**Not an agent?** [/check](https://automaton-tx-explainer.vercel.app/check) is a web page where anyone can buy the $0.25 wallet or token report, or the $1.50 token deep scan, with a browser wallet (MetaMask, Coinbase Wallet, etc.) using the same x402 flow. Page sources are in `check-src/`; `node check-src/build.mjs` (needs `esbuild`) regenerates `check-assets.js`.
 
 ## Endpoints
 
-`{chain}` is one of `base`, `ethereum` or `bsc`. That gives 17 paid tools.
+`{chain}` is one of `base`, `ethereum` or `bsc`. That gives 20 paid tools.
 
 | Tool | Endpoint | Price | What it does |
 |---|---|---|---|
@@ -23,6 +23,17 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 | ENS / Basename Resolver | `GET /v1/ens?name=vitalik.eth` | $0.005 | Name to address + text records, or reverse lookup |
 | Calldata Decoder | `GET /v1/decode?data=0x…` | $0.005 | Decode calldata before signing, with plain-English warnings |
 | Wallet Portfolio | `GET /v1/portfolio?address=0x…` | $0.01 | Native + 8 major token balances on Base, Ethereum, BNB |
+| Wallet Security Report | `GET /v1/wallet-report?address=0x…` | $0.25 | One-call wallet report across 3 chains: balances, approvals, 7702 delegation, plain-English summary |
+| Token Due-Diligence Report | `GET /v1/token-report?address=0x…&chain=base` | $0.25 | Metadata, proxy, owner/admin, owner holdings, Sourcify, mint/pause/blacklist/fee flags |
+| **Token Deep Scan** | `GET /v1/token/deep-scan?address=0x…&chain=base` | $1.50 | Simulated buy + sell against the main DEX pool (honeypot and buy/sell tax), main pool liquidity in USD, V2 LP burned/locked share, top-holder concentration, owner powers, and a list of what it couldn't determine |
+
+### How the deep scan works
+
+- **Honeypot / tax test:** a small simulator contract (`sim-src/Sim.sol`) is injected with an `eth_call` state override, wraps native coin, buys from the deepest WETH/WBNB pool (Uniswap V2/V3, Aerodrome, SushiSwap, PancakeSwap V2/V3), then approves + `transferFrom`s the tokens back into the pool and sells. Nothing is ever sent onchain. Buy tax = requested vs received tokens; sell tax = sent vs what the pool received.
+- **Liquidity:** pools are found onchain via the DEX factories; USD value uses the onchain native/stable price.
+- **LP lock:** for V2-style pools, share of LP at `0x0`/`0x…dEaD`, held by the token contract, or by Blockscout-labeled lockers. V3 positions are NFTs, so lock status is reported as not determinable.
+- **Holders:** Blockscout's public API where it answers (Ethereum; Base when reachable). Otherwise a clearly-marked *partial* list built from recent Transfer logs + live `balanceOf`.
+- Tests: `node --test tests/` runs against real tokens (Base USDC, BRETT, DEGEN, Ethereum PEPE, BNB CAKE) plus synthetic honeypot and 10%-tax tokens built with state overrides.
 
 A bare request with no payment returns `402 Payment Required` along with the payment requirements. If the input is invalid, you get a `400` and are not charged.
 

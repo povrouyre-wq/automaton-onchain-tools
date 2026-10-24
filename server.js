@@ -13,6 +13,7 @@ import { z } from "zod";
 import { mountLanding } from "./landing.js";
 import { mountCheck } from "./check.js";
 import { walletReport, tokenReport } from "./reports.js";
+import { deepScan } from "./deepscan.js";
 import { CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -81,6 +82,12 @@ ROUTES.push(
     desc: "Premium one-call token due-diligence on Base, Ethereum or BNB Smart Chain: token metadata, proxy/upgradeability, owner and admin, owner/dead/self balances as % of supply, Sourcify verification, mint/pause/blacklist/fee flags, plain-English summary.",
     out: { type: "token-report", riskLevel: "medium", summary: "USD Coin (USDC), an ERC-20 on Base... It is upgradeable (EIP-1967)...", holders: { owner: "0x...", ownerBalance: { pctOfSupply: 0 } }, findings: [] } });
 
+const PRICE_DEEP = process.env.PRICE_DEEP || "$1.50";
+ROUTES.push({ key: "token_deep_scan", path: "/v1/token/deep-scan", param: "address", re: ADDR, pattern: AP, price: PRICE_DEEP, fn: (v, q) => deepScan(v, q.chain || "base"), name: "Token Deep Scan: honeypot sim + liquidity + holders (premium)", pdesc: "token contract address", example: EX.base.token, tag: "report",
+  extra: { name: "chain", re: CHAIN_RE, pattern: "^(base|ethereum|bsc)$", desc: "base | ethereum | bsc (default base)", example: "base" },
+  desc: "Premium token deep scan on Base, Ethereum or BNB Smart Chain: simulated buy+sell against the main DEX pool (honeypot + buy/sell tax detection via eth_call, nothing traded), main pool liquidity in USD, V2 LP burned/locked share, top-holder concentration (Blockscout; partial fallback from recent transfers), plus owner powers (proxy, owner, mint/pause/blacklist/fee). Lists anything it couldn't determine.",
+  out: { type: "token-deep-scan", riskLevel: "medium", honeypot: "not detected", summary: "Brett (BRETT) on Base. Simulated buy and sell both worked (buy tax 0%, sell tax 0%). Main pool: Uniswap V3 1%, about $1,396,832 liquidity...", honeypotSimulation: { ran: true, canSell: true, buyTaxPct: 0, sellTaxPct: 0 }, liquidity: { mainPool: { dex: "Uniswap V3 1%", approxTotalUsd: 1396832 }, lp: { verdict: "..." } }, holders: { top10Pct: 8.9, top10ExcludingPoolsAndBurnPct: 7.3 }, couldNotDetermine: ["LP lock: V3 liquidity is held as position NFTs..."] } });
+
 const app = express();
 app.set("trust proxy", true);
 const server = new x402ResourceServer(new HTTPFacilitatorClient(facCfg)).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
@@ -91,7 +98,7 @@ server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it
 });
 const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: Object.keys(CHAINS),
   endpoints: ROUTES.map(r => ({ url: `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
-app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM });
+app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP });
 
 // Validate before charging: bare paymentless request -> 402 (discovery probes); bad input -> free 400.
 const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
@@ -116,8 +123,8 @@ for (const r of ROUTES) app.get(r.path, async (req, res) => {
 });
 
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.4.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, URL safety checks, plus $0.25 premium wallet and token reports.",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.5.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,
@@ -137,7 +144,7 @@ async function buildMcp() {
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
     extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.4.0" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.5.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
       m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await r.fn(a[r.param], a)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
