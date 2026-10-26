@@ -129,7 +129,7 @@ function summarizeHolders(items, known, extra) {
   const r = n => Math.round(n * 100) / 100;
   return { available: true, ...extra, top10Pct: r(items.slice(0, 10).reduce((s, x) => s + (x.pctOfSupply || 0), 0)), top10ExcludingPoolsAndBurnPct: r(ex.reduce((s, x) => s + (x.pctOfSupply || 0), 0)), largestNonPoolHolderPct: ex[0]?.pctOfSupply ?? null, top: items.slice(0, 15).map(({ _scan, ...o }) => o) };
 }
-async function holders(chain, token, supply, decimals, known) {
+export async function holders(chain, token, supply, decimals, known) {
   const viaLogs = async why => { try { const items = await holdersFromLogs(chain, token, supply, decimals, known); const sc = items[0]?._scan;
       if (!items.length) return { available: false, reason: why + " No holders found in recent transfers either." };
       return { ...summarizeHolders(items, known, { source: "Recent Transfer logs (public RPC) + live balanceOf", partial: true, scanned: sc }), note: `PARTIAL: ${why} Ranked the ${sc?.addressesChecked} addresses active in the last ~${sc?.blocks} blocks plus pools/burn/owner by live balance. Large holders that haven't moved tokens recently can be missed, so real concentration may be higher.` }; }

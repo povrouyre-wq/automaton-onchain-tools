@@ -2,7 +2,7 @@
 // Same paid endpoints agents use; the page just builds the x402 payment in the browser. Sources in check-src/.
 import { APP_JS, PAY_JS, PAY_VER } from "./check-assets.js";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50" }) {
+export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005" }) {
   const REPO = "https://github.com/povrouyre-wq/automaton-onchain-tools";
   const TITLE = "Check a wallet or token before you trust it | Automaton";
   const DESC = `Pay-per-report crypto safety check. Paste a wallet or token address, pay ${PRICE} in USDC on Base with your own wallet, and get a plain-English risk report. No signup.`;
@@ -18,7 +18,7 @@ nav{display:flex;justify-content:space-between;align-items:center;padding:18px 0
 nav a{color:var(--mu);font-size:14px;margin-left:14px}
 h1{font-size:clamp(28px,6vw,42px);line-height:1.15;margin:18px 0 10px}h1 span{background:linear-gradient(90deg,var(--ac),var(--ac2));-webkit-background-clip:text;color:transparent}
 .sub{color:var(--mu);margin:0 0 22px}.panel{background:var(--pn);border:1px solid var(--ln);border-radius:14px;padding:18px;margin:0 0 16px}
-label{display:block;font-size:14px;color:var(--mu);margin:0 0 6px}.kinds{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:0 0 14px}
+label{display:block;font-size:14px;color:var(--mu);margin:0 0 6px}.kinds{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 14px}
 .kinds label{margin:0;border:1px solid var(--ln);border-radius:10px;padding:12px;cursor:pointer;color:var(--tx)}.kinds input{margin-right:6px}
 .kinds label:has(input:checked){border-color:var(--ac);background:rgba(79,140,255,.08)}.kinds small{display:block;color:var(--mu);font-size:13px;margin-top:2px}
 input[type=text],select{width:100%;background:#0f1218;color:var(--tx);border:1px solid var(--ln);border-radius:10px;padding:12px;font:15px ui-monospace,Menlo,monospace}
@@ -39,16 +39,17 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 </style></head><body><div class="w">
 <nav><a class="logo" href="/" style="color:var(--tx)">◆ <b>Automaton</b> Check</a><div><a href="/">For developers</a><a href="${REPO}">Source</a></div></nav>
 <h1>Check a wallet or token<br><span>before you trust it</span></h1>
-<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_DEEP)} for a deep scan) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
+<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
 
 <form id="form" class="panel" novalidate>
 <div class="kinds">
 <label><input type="radio" name="kind" value="wallet" checked>Wallet check · ${esc(PRICE)}<small>Balances, risky token approvals and wallet type on Base, Ethereum and BNB Chain in one report.</small></label>
 <label><input type="radio" name="kind" value="token">Token check · ${esc(PRICE)}<small>Upgradeability, owner powers, mint/pause/blacklist flags, source verification, owner holdings.</small></label>
 <label><input type="radio" name="kind" value="deep">Token deep scan · ${esc(PRICE_DEEP)}<small>Everything in the token check plus a simulated buy+sell (honeypot and tax test), main pool liquidity, LP burn/lock and top-holder concentration.</small></label>
+<label><input type="radio" name="kind" value="solana">Solana token check · ${esc(PRICE_SOL)}<small>SPL, Token-2022 and pump.fun coins: mint/freeze authority, mutable metadata, risky Token-2022 extensions, holder concentration, bonding-curve or LP burn status.</small></label>
 </div>
 <div class="row" id="chainRow" hidden><label for="chain">Chain the token is on</label><select id="chain"><option value="base">Base</option><option value="ethereum">Ethereum</option><option value="bsc">BNB Chain</option></select></div>
-<div class="row"><label for="addr" id="addrLabel">Wallet address</label><input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…"></div>
+<div class="row"><label for="addr" id="addrLabel">Wallet address</label><input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… (or a Solana mint address)"></div>
 <button class="b1" type="submit">See price &amp; continue</button>
 <p class="muted small" style="margin:10px 0 0">Checking the price is free. Invalid addresses are rejected before any payment.</p>
 </form>
@@ -71,7 +72,7 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 <div class="panel"><h3 style="margin-top:0">How it works</h3><ul class="facts">
 <li>You need <b>at least ${esc(PRICE)} USDC on Base</b> in a browser wallet (MetaMask, Coinbase Wallet, Rabby…).</li>
 <li>Payments use the open <a href="https://www.x402.org" target="_blank" rel="noopener">x402</a> standard: you sign a one-time USDC transfer, not an unlimited approval.</li>
-<li>Reports are built live from free public data (public RPCs, Sourcify, openchain, Blockscout). The deep scan's buy/sell test is a simulated call: nothing is traded onchain.</li>
+<li>Reports are built live from free public data (public RPCs including public Solana RPC, Sourcify, openchain, Blockscout). The Solana check pays in USDC on Base too, so you need an EVM wallet. The deep scan's buy/sell test is a simulated call: nothing is traded onchain.</li>
 <li>Open source: every line is on <a href="${REPO}">GitHub</a>. No cookies, no analytics.</li>
 </ul>
 <p class="muted small">Reports are automated heuristics, not audits, and not financial or security advice. Balances cover native coins plus major tokens only, with no USD prices. Top-holder lists are only in the deep scan (full lists on Ethereum; on Base and BNB Chain they may be partial). Built and run by Automaton, an AI agent, under human oversight.</p></div>

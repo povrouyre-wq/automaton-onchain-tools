@@ -14,6 +14,7 @@ import { mountLanding } from "./landing.js";
 import { mountCheck } from "./check.js";
 import { walletReport, tokenReport } from "./reports.js";
 import { deepScan } from "./deepscan.js";
+import { solanaToken, isPubkey, SOL_ADDR_RE } from "./solana.js";
 import { CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -88,6 +89,10 @@ ROUTES.push({ key: "token_deep_scan", path: "/v1/token/deep-scan", param: "addre
   desc: "Premium token deep scan on Base, Ethereum or BNB Smart Chain: simulated buy+sell against the main DEX pool (honeypot + buy/sell tax detection via eth_call, nothing traded), main pool liquidity in USD, V2 LP burned/locked share, top-holder concentration (Blockscout; partial fallback from recent transfers), plus owner powers (proxy, owner, mint/pause/blacklist/fee). Lists anything it couldn't determine.",
   out: { type: "token-deep-scan", riskLevel: "medium", honeypot: "not detected", summary: "Brett (BRETT) on Base. Simulated buy and sell both worked (buy tax 0%, sell tax 0%). Main pool: Uniswap V3 1%, about $1,396,832 liquidity...", honeypotSimulation: { ran: true, canSell: true, buyTaxPct: 0, sellTaxPct: 0 }, liquidity: { mainPool: { dex: "Uniswap V3 1%", approxTotalUsd: 1396832 }, lp: { verdict: "..." } }, holders: { top10Pct: 8.9, top10ExcludingPoolsAndBurnPct: 7.3 }, couldNotDetermine: ["LP lock: V3 liquidity is held as position NFTs..."] } });
 
+ROUTES.push({ key: "solana_token_check", path: "/v1/solana/token", param: "address", re: SOL_ADDR_RE, valid: isPubkey, pattern: "^[1-9A-HJ-NP-Za-km-z]{32,44}$", price: PRICE_SMALL, fn: v => solanaToken(v), name: "Solana Token Check (SPL / Token-2022 / pump.fun)", pdesc: "Solana token mint address (base58)", example: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", tag: "solana", tags: ["solana", "token", "security", "pumpfun", "crypto"], chainLabel: "Solana",
+  desc: "Rug-check a Solana token mint from public RPC data: mint and freeze authority status, metadata mutability (Metaplex update authority / isMutable or Token-2022 metadata), Token-2022 extensions (transfer fee, permanent delegate, transfer hook, pausable, default-frozen), top-holder concentration excluding pools and the bonding curve where identifiable, pump.fun bonding-curve status and, for graduated coins, PumpSwap LP burn share. Lists what it couldn't determine. Not an audit.",
+  out: { type: "solana-token-check", kind: "mint", tokenProgram: "spl-token", token: { name: "Bonk", symbol: "Bonk", decimals: 5 }, mintAuthority: { active: false }, freezeAuthority: { active: false }, metadata: { source: "metaplex", isMutable: true }, extensions: { present: [] }, pumpfun: { isPumpFun: false }, holders: { top10ExcludingPoolsPct: 38.2, largestWalletPct: 8.8 }, riskLevel: "medium", findings: [{ severity: "medium", note: "Metadata can still be changed..." }], couldNotDetermine: ["LP burn/lock is only checked for pump.fun coins..."] } });
+
 const app = express();
 app.set("trust proxy", true);
 const server = new x402ResourceServer(new HTTPFacilitatorClient(facCfg)).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
@@ -96,16 +101,16 @@ server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it
   const tc = ctx.transportContext || {}; const path = tc.request?.path || tc.adapter?.getPath?.() || tc.path || "";
   const r = ROUTES.find(r => path === r.path); if (r) p.resource = { url: ORIGIN + r.path, description: r.desc, mimeType: "application/json" };
 });
-const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: Object.keys(CHAINS),
+const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"],
   endpoints: ROUTES.map(r => ({ url: `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
-app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP });
+app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL });
 
 // Validate before charging: bare paymentless request -> 402 (discovery probes); bad input -> free 400.
 const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
 for (const r of ROUTES) app.get(r.path, (req, res, next) => {
   const v = req.query[r.param];
   if (v === undefined && !hasPay(req)) return next();
-  if (typeof v !== "string" || !r.re.test(v)) return res.status(400).json({ error: `query param ${r.param} must match ${r.pattern}` });
+  if (typeof v !== "string" || !r.re.test(v) || (r.valid && !r.valid(v))) return res.status(400).json({ error: `query param ${r.param} must match ${r.pattern}` });
   if (r.extra && req.query[r.extra.name] !== undefined && (typeof req.query[r.extra.name] !== "string" || !r.extra.re.test(req.query[r.extra.name]))) return res.status(400).json({ error: `query param ${r.extra.name} must match ${r.extra.pattern}` });
   if (r.param === "url") { try { const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : "https://" + v); if (!["http:", "https:"].includes(u.protocol)) throw 0; } catch { return res.status(400).json({ error: "url must be an http(s) URL or hostname" }); } }
   next();
@@ -113,7 +118,7 @@ for (const r of ROUTES) app.get(r.path, (req, res, next) => {
 const routeCfg = {};
 for (const r of ROUTES) routeCfg["GET " + r.path] = {
   accepts: [{ scheme: "exact", price: r.price, network: NETWORK, payTo: PAY_TO }], description: r.desc, mimeType: "application/json",
-  resource: ORIGIN + r.path, serviceName: r.name, tags: r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"],
+  resource: ORIGIN + r.path, serviceName: r.name, tags: r.tags || (r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"]),
   extensions: { ...builderExt, ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) },
     inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, output: { example: r.out } }) } };
 // Mirror the PAYMENT-REQUIRED header into the 402 body (it is otherwise "{}") so indexers and clients that read the body (x402 v1 style) see the same accepts[].
@@ -129,7 +134,7 @@ for (const r of ROUTES) app.get(r.path, async (req, res) => {
 
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
   info: { title: "Automaton Onchain & URL Tools", version: "1.5.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration).",
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, a Solana token check (SPL, Token-2022, pump.fun), URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,

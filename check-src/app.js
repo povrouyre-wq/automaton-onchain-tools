@@ -2,9 +2,9 @@
 // is lazy-loaded from /check/pay.js only when the user clicks Pay.
 (() => {
   const $ = id => document.getElementById(id);
-  const ADDR = /^0x[0-9a-fA-F]{40}$/;
+  const ADDR = /^0x[0-9a-fA-F]{40}$/, SOL = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
   const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-  const CN = { base: "Base", ethereum: "Ethereum", bsc: "BNB Chain" };
+  const CN = { base: "Base", ethereum: "Ethereum", bsc: "BNB Chain", solana: "Solana" };
   const EXPLORER = { base: "https://basescan.org", ethereum: "https://etherscan.io", bsc: "https://bscscan.com" };
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const short = a => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
@@ -14,13 +14,16 @@
 
   function eth() { return window.ethereum || null; }
   function setStatus(html, cls = "") { const s = $("status"); s.className = "status " + cls; s.innerHTML = html; s.hidden = !html; }
-  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet";
-    $("addrLabel").textContent = k !== "wallet" ? "Token contract address" : "Wallet address";
-    $("addr").placeholder = k !== "wallet" ? "0x… token contract" : "0x… wallet"; reset(); }
+  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet" || k === "solana";
+    $("addrLabel").textContent = k === "solana" ? "Solana token mint address" : k !== "wallet" ? "Token contract address" : "Wallet address";
+    $("addr").placeholder = k === "solana" ? "e.g. DezXAZ8z7Pnrn… or …pump" : k !== "wallet" ? "0x… token contract" : "0x… wallet"; reset(); }
   function reset() { state.pr = null; $("payBox").hidden = true; $("report").hidden = true; setStatus(""); }
 
   function buildUrl() {
     const kind = document.querySelector("input[name=kind]:checked").value, a = $("addr").value.trim(), chain = $("chain").value;
+    if (kind === "solana") { if (!SOL.test(a)) return { err: "That doesn't look like a Solana mint address (base58, 32 to 44 characters, no 0x)." };
+      return { url: `/v1/solana/token?address=${a}`, kind, chain: "solana", addr: a }; }
+    if (SOL.test(a) && !a.startsWith("0x")) return { err: "That looks like a Solana address. Pick \"Solana token check\" above." };
     if (!ADDR.test(a)) return { err: "That doesn't look like an address. It should start with 0x followed by 40 hex characters. ENS names aren't supported here." };
     const u = kind === "deep" ? `/v1/token/deep-scan?address=${a}&chain=${chain}` : kind === "token" ? `/v1/token-report?address=${a}&chain=${chain}` : `/v1/wallet-report?address=${a}`;
     return { url: u, kind, chain: kind !== "wallet" ? chain : null, addr: a };
@@ -40,7 +43,7 @@
       if (!acc) return setStatus("No Base USDC payment option offered.", "err");
       state = { ...state, pr, url: b.url, kind: b.kind, chain: b.chain };
       $("qPrice").textContent = fmtUsdc(acc.amount) + " USDC";
-      $("qWhat").textContent = b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
+      $("qWhat").textContent = b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
       $("qPayTo").textContent = acc.payTo; $("qPayTo").href = "https://basescan.org/address/" + acc.payTo;
       $("payBox").hidden = false; setStatus("");
       updateWalletUi();
@@ -166,12 +169,29 @@
     if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
     return h;
   }
+  function solHtml(r) {
+    if (r.kind !== "mint") return "";
+    const sx = a => a ? `<a href="https://solscan.io/account/${esc(a)}" target=_blank rel=noopener>${esc(short(a))}</a>` : "n/a";
+    const T = r.token || {}, M = r.metadata || {}, F = r.pumpfun || {}, H = r.holders || {};
+    const auth = o => o && o.active ? `<b class=bad>Active</b> (${sx(o.address)})` : "Revoked";
+    const facts = [["Name / symbol", `${esc(T.name || "?")} (${esc(T.symbol || "?")})`], ["Program", esc(r.tokenProgram)], ["Supply", esc(T.supply)],
+      ["Mint authority", auth(r.mintAuthority)], ["Freeze authority", auth(r.freezeAuthority)],
+      ["Metadata", M.source ? (M.isMutable ? `<b class=bad>Mutable</b> (update authority ${sx(M.updateAuthority)})` : "Immutable") + ` · ${esc(M.source)}` : "Not found"],
+      ["Token-2022 extensions", esc((r.extensions?.present || []).join(", ") || "none")],
+      ["pump.fun", F.isPumpFun ? (F.status === "on-curve" ? `On the bonding curve${F.progressPct != null ? ` (~${esc(F.progressPct)}% to graduation)` : ""}` : `Graduated${F.pool ? ` · PumpSwap ${sx(F.pool.address)}${F.pool.lpBurnedPct != null ? `, ${esc(F.pool.lpBurnedPct)}% LP burned` : ""}` : ""}`) : "Not a pump.fun coin"]];
+    let h = `<h3>Key facts</h3><table><tbody>${facts.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>`;
+    if (H.available) h += `<h3>Holders <small class=muted>(${esc(H.basis)})</small></h3><p>Top 10 own <b>${esc(H.top10Pct)}%</b> (${esc(H.top10ExcludingPoolsPct)}% excluding pools and the curve).</p>
+      <table><thead><tr><th>Owner</th><th>% supply</th><th>Note</th></tr></thead><tbody>${(H.top || []).map(x => `<tr><td>${sx(x.owner)}</td><td>${esc(x.pctOfSupply)}%</td><td>${esc(x.label || "")}</td></tr>`).join("")}</tbody></table>`;
+    else h += `<h3>Holders</h3><p class=muted>${esc(H.reason || "n/a")}</p>`;
+    if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
+    return h;
+  }
   function render(r, tx) {
     const lvl = String(r.riskLevel || "n/a").toLowerCase();
     $("report").innerHTML = `<div class=rhead><span class="risk ${esc(lvl)}">Risk: ${esc(lvl)}</span>
-      <span class=muted>${r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address))}</span></div>
+      <span class=muted>${r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address))}</span></div>
       <p class=summary>${esc(r.summary)}</p><h3>Findings</h3>${findingsHtml(r.findings)}
-      ${r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
+      ${r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
       <p class="muted small">${esc(r.disclaimer || "")}</p>
       ${tx ? `<p class="muted small">Paid: <a href="https://basescan.org/tx/${esc(tx)}" target=_blank rel=noopener>view payment on Basescan</a></p>` : ""}
       <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
@@ -189,7 +209,8 @@
   $("addr").addEventListener("input", reset); $("chain").addEventListener("change", reset);
   $("form").addEventListener("submit", getQuote); $("connectBtn").addEventListener("click", connect); $("payBtn").addEventListener("click", pay);
   const q = new URLSearchParams(location.search);
-  if (["token", "deep"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
+  if (["token", "deep", "solana"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
+  if (q.get("chain") === "solana") document.querySelector("input[value=solana]").checked = true;
   if (q.get("chain") && CN[q.get("chain")]) $("chain").value = q.get("chain");
   syncKind(); if (q.get("address")) $("addr").value = q.get("address");
   mobileLinks(); updateWalletUi();
