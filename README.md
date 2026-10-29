@@ -26,7 +26,18 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 | Wallet Security Report | `GET /v1/wallet-report?address=0x…` | $0.25 | One-call wallet report across 3 chains: balances, approvals, 7702 delegation, plain-English summary |
 | Token Due-Diligence Report | `GET /v1/token-report?address=0x…&chain=base` | $0.25 | Metadata, proxy, owner/admin, owner holdings, Sourcify, mint/pause/blacklist/fee flags |
 | **Solana Token Check** | `GET /v1/solana/token?address=<mint>` | $0.005 | SPL / Token-2022 / pump.fun mint: mint + freeze authority, metadata mutability (Metaplex isMutable / Token-2022 metadata), risky Token-2022 extensions (transfer fee, permanent delegate, transfer hook, pausable, default-frozen), top-holder concentration with pools and the bonding curve excluded where identifiable, pump.fun curve progress or PumpSwap LP burn share. Free public Solana RPC only; lists what it couldn't determine |
+| **Launch Feed (Base + Solana)** | `GET /v1/launches?chain=all&limit=10` | $0.02 | Newest token launches on Base and Solana (mostly pump.fun), up to 20 per chain, each run through our risk check at request time: pool DEX, age, liquidity, FDV, 1h buys/sells, plus risk level and flags |
+| **Base Launch Feed** | `GET /v1/base/launches?limit=10` | $0.01 | Base only: verified source, upgradeable proxy, owner type, mint/pause/blacklist/fee selectors on each new token (B20 native tokens are labeled as not checkable by bytecode) |
+| **Solana Launch Feed** | `GET /v1/solana/launches?limit=10` | $0.01 | Solana only: mint/freeze authority, metadata mutability, Token-2022 extensions, holder concentration, pump.fun curve progress on each new mint |
 | **Token Deep Scan** | `GET /v1/token/deep-scan?address=0x…&chain=base` | $1.50 | Simulated buy + sell against the main DEX pool (honeypot and buy/sell tax), main pool liquidity in USD, V2 LP burned/locked share, top-holder concentration, owner powers, and a list of what it couldn't determine |
+
+### How the launch feed works
+
+- **Source:** GeckoTerminal's free public `new_pools` API for `base` and `solana` (newest pools first, deduplicated to one row per new token, majors like WETH/USDC/SOL skipped). On Base that covers Uniswap v2/v3/v4, Aerodrome, Bankr, Clanker-style launchpads and anything else GeckoTerminal indexes; on Solana it is mostly pump.fun bonding curves plus PumpSwap/Meteora pools. Data by GeckoTerminal.
+- **Risk:** each token goes through the same code as `/v1/base/contract-risk` or `/v1/solana/token`, at request time, cached about 10 minutes per token. Results are summarized to a risk level plus flags.
+- **No database, no cron:** everything is computed when you call it, so rows are as fresh as GeckoTerminal (usually under a minute). Upstream pages are cached 45 s.
+- **Free delayed sample:** `GET /free/launches?chain=all|base|solana` returns up to 5 launches per chain with risk level and short flags. Base rows are at least 15 minutes old; Solana rows come from the oldest page GeckoTerminal serves (about 5–10 minutes) and the response is CDN-cached for 10 minutes, so roughly 5–20 minutes behind.
+- **Limits:** if GeckoTerminal is down or rate-limits us, the paid response says so in `errors`. B20 (Base native precompile) tokens can't be checked by bytecode and are marked `unknown`. Not an audit; most new launches fail.
 
 ### How the deep scan works
 

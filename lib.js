@@ -66,6 +66,7 @@ const SLOTS = { impl: "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca5
 const slotAddr = v => (!v || BigInt(v) === 0n) ? null : "0x" + v.slice(-40);
 async function proxyInfo(C, address, code) {
   if (/^0x363d3d373d3d3d363d73[0-9a-f]{40}5af43d82803e903d91602b57fd5bf3$/i.test(code)) return { standard: "EIP-1167", implementation: "0x" + code.slice(22, 62), admin: null };
+  if (/^0x3d3d3d3d363d3d37363d73[0-9a-f]{40}5af43d3d93803e602a57fd5bf3$/i.test(code)) return { standard: "EIP-1167", variant: "ERC-7511 PUSH0 minimal clone", implementation: "0x" + code.slice(24, 64), admin: null };
   const [impl, admin, beacon, zos] = await Promise.all(Object.values(SLOTS).map(slot => C.rpc.getStorageAt({ address, slot }).catch(() => null)));
   if (slotAddr(beacon)) { let im = null; try { im = await C.rpc.readContract({ address: slotAddr(beacon), abi: parseAbi(["function implementation() view returns (address)"]), functionName: "implementation" }); } catch {}
     return { standard: "EIP-1967 beacon", beacon: slotAddr(beacon), implementation: im, admin: slotAddr(admin) }; }

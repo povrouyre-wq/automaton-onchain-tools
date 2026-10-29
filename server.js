@@ -15,6 +15,7 @@ import { mountCheck } from "./check.js";
 import { walletReport, tokenReport } from "./reports.js";
 import { deepScan } from "./deepscan.js";
 import { solanaToken, isPubkey, SOL_ADDR_RE } from "./solana.js";
+import { launches, launchesDelayed } from "./launches.js";
 import { CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -93,6 +94,24 @@ ROUTES.push({ key: "solana_token_check", path: "/v1/solana/token", param: "addre
   desc: "Rug-check a Solana token mint from public RPC data: mint and freeze authority status, metadata mutability (Metaplex update authority / isMutable or Token-2022 metadata), Token-2022 extensions (transfer fee, permanent delegate, transfer hook, pausable, default-frozen), top-holder concentration excluding pools and the bonding curve where identifiable, pump.fun bonding-curve status and, for graduated coins, PumpSwap LP burn share. Lists what it couldn't determine. Not an audit.",
   out: { type: "solana-token-check", kind: "mint", tokenProgram: "spl-token", token: { name: "Bonk", symbol: "Bonk", decimals: 5 }, mintAuthority: { active: false }, freezeAuthority: { active: false }, metadata: { source: "metaplex", isMutable: true }, extensions: { present: [] }, pumpfun: { isPumpFun: false }, holders: { top10ExcludingPoolsPct: 38.2, largestWalletPct: 8.8 }, riskLevel: "medium", findings: [{ severity: "medium", note: "Metadata can still be changed..." }], couldNotDetermine: ["LP burn/lock is only checked for pump.fun coins..."] } });
 
+// Launch feed: newest token launches (GeckoTerminal new pools) with our risk check on each. Query params are optional.
+const PRICE_FEED = process.env.PRICE_FEED || "$0.01", PRICE_FEED_ALL = process.env.PRICE_FEED_ALL || "$0.02";
+const LIMIT = { name: "limit", re: /^([1-9]|1[0-9]|20)$/, pattern: "^([1-9]|1[0-9]|20)$", desc: "rows per chain, 1-20 (default 10)", example: "10" };
+const FEED_SRC = "Source: GeckoTerminal's public new-pools feed (newest first, one row per new token), checked live at request time.";
+const feedOut = { type: "launch-feed", generatedAt: "2026-10-29T18:21:11Z", count: 10, launches: [{ chain: "base", token: { address: "0x...", name: "...", symbol: "..." },
+  pool: { address: "0x...", dex: "uniswap-v4-base", quote: "WETH", createdAt: "2026-10-29T18:12:07Z", ageMinutes: 9, liquidityUsd: 2968.41, fdvUsd: 5900, txnsH1: { buys: 12, sells: 3 } },
+  risk: { riskLevel: "medium", verifiedSource: false, upgradeable: false, ownerType: "eoa", capabilities: ["mint"], flags: [{ severity: "high", note: "Source not verified on Sourcify..." }] } }], disclaimer: "..." };
+ROUTES.push(
+  { key: "launch_feed", path: "/v1/launches", param: "chain", optional: true, re: /^(all|base|solana)$/, pattern: "^(all|base|solana)$", price: PRICE_FEED_ALL, fn: (v, q) => launches({ chain: v || "all", limit: q.limit }),
+    name: "New Token Launch Feed with Risk Flags (Base + Solana)", pdesc: "all | base | solana (default all)", example: "all", tag: "launches", tags: ["launches", "new-tokens", "pumpfun", "base", "solana", "security", "crypto"], chainLabel: "Base + Solana", extra: LIMIT,
+    desc: `Latest new token launches on Base (any DEX GeckoTerminal indexes: Uniswap v2/v3/v4, Aerodrome, Bankr, launchpads) and Solana (mostly pump.fun bonding curves), up to 20 per chain, each run through our automated risk check at request time: Base gets verified source, proxy/upgradeability, owner type, mint/pause/blacklist/fee selectors; Solana gets mint and freeze authority, metadata mutability, Token-2022 extensions, holder concentration and pump.fun curve progress. Includes pool age, liquidity, FDV and 1h buys/sells. ${FEED_SRC} Heuristics, not an audit.`, out: feedOut },
+  { key: "base_launch_feed", path: "/v1/base/launches", param: "limit", optional: true, re: LIMIT.re, pattern: LIMIT.pattern, price: PRICE_FEED, fn: v => launches({ chain: "base", limit: v }),
+    name: "Base New Token Launch Feed with Risk Flags", pdesc: LIMIT.desc, example: "10", tag: "launches", tags: ["launches", "new-tokens", "base", "security", "crypto"], chainLabel: "Base",
+    desc: `Latest new token launches on Base, up to 20, each with our automated contract-risk check at request time (Sourcify verification, upgradeable proxy, owner type, mint/pause/blacklist/fee selectors; B20 native tokens are labeled as not checkable by bytecode), plus pool DEX, age, liquidity, FDV and 1h buys/sells. ${FEED_SRC} Heuristics, not an audit.`, out: feedOut },
+  { key: "solana_launch_feed", path: "/v1/solana/launches", param: "limit", optional: true, re: LIMIT.re, pattern: LIMIT.pattern, price: PRICE_FEED, fn: v => launches({ chain: "solana", limit: v }),
+    name: "Solana / pump.fun New Token Launch Feed with Risk Flags", pdesc: LIMIT.desc, example: "10", tag: "launches", tags: ["launches", "new-tokens", "solana", "pumpfun", "security", "crypto"], chainLabel: "Solana",
+    desc: `Latest new token launches on Solana (mostly pump.fun bonding curves, plus PumpSwap/Meteora pools), up to 20, each with our Solana token check at request time: mint and freeze authority, metadata mutability, Token-2022 extensions, top-holder concentration excluding the curve/pools, and pump.fun curve progress. Includes age, FDV and 1h buys/sells. ${FEED_SRC} Heuristics, not an audit.`, out: { ...feedOut, launches: [{ chain: "solana", token: { address: "...pump", symbol: "..." }, pool: { dex: "pump-fun", ageMinutes: 1, fdvUsd: 2866 }, risk: { riskLevel: "low", mintAuthorityActive: false, freezeAuthorityActive: false, metadataMutable: false, pumpfun: { status: "on-curve", progressPct: 2.8 }, top10HoldersPct: 2.2, flags: [] } }] } });
+
 const app = express();
 app.set("trust proxy", true);
 const server = new x402ResourceServer(new HTTPFacilitatorClient(facCfg)).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
@@ -109,7 +128,8 @@ app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }
 const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
 for (const r of ROUTES) app.get(r.path, (req, res, next) => {
   const v = req.query[r.param];
-  if (v === undefined && !hasPay(req)) return next();
+  if (r.optional && r.extra && req.query[r.extra.name] !== undefined && (typeof req.query[r.extra.name] !== "string" || !r.extra.re.test(req.query[r.extra.name]))) return res.status(400).json({ error: `query param ${r.extra.name} must match ${r.extra.pattern}` });
+  if (v === undefined && (!hasPay(req) || r.optional)) return next();
   if (typeof v !== "string" || !r.re.test(v) || (r.valid && !r.valid(v))) return res.status(400).json({ error: `query param ${r.param} must match ${r.pattern}` });
   if (r.extra && req.query[r.extra.name] !== undefined && (typeof req.query[r.extra.name] !== "string" || !r.extra.re.test(req.query[r.extra.name]))) return res.status(400).json({ error: `query param ${r.extra.name} must match ${r.extra.pattern}` });
   if (r.param === "url") { try { const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : "https://" + v); if (!["http:", "https:"].includes(u.protocol)) throw 0; } catch { return res.status(400).json({ error: "url must be an http(s) URL or hostname" }); } }
@@ -120,7 +140,7 @@ for (const r of ROUTES) routeCfg["GET " + r.path] = {
   accepts: [{ scheme: "exact", price: r.price, network: NETWORK, payTo: PAY_TO }], description: r.desc, mimeType: "application/json",
   resource: ORIGIN + r.path, serviceName: r.name, tags: r.tags || (r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"]),
   extensions: { ...builderExt, ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) },
-    inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, output: { example: r.out } }) } };
+    inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: r.optional ? [] : [r.param] }, output: { example: r.out } }) } };
 // Mirror the PAYMENT-REQUIRED header into the 402 body (it is otherwise "{}") so indexers and clients that read the body (x402 v1 style) see the same accepts[].
 app.use((req, res, next) => { if (!req.path.startsWith("/v1/")) return next(); const end = res.end;
   res.end = function (chunk, ...rest) { try { if (res.statusCode === 402 && !res.headersSent && (!chunk || String(chunk) === "{}")) { const h = res.getHeader("payment-required");
@@ -132,14 +152,20 @@ for (const r of ROUTES) app.get(r.path, async (req, res) => {
   catch (e) { res.status(e.status || 404).json({ error: e.status === 400 ? e.message : "not found or upstream error", detail: String(e.shortMessage || e.message).slice(0, 300) }); }
 });
 
+// Free delayed launch feed (for posts, bots, and trying before buying). CDN-cached 10 min.
+app.get("/free/launches", async (req, res) => {
+  const c = req.query.chain ?? "all"; if (typeof c !== "string" || !/^(all|base|solana)$/.test(c)) return res.status(400).json({ error: "chain must be all | base | solana" });
+  try { const d = await launchesDelayed({ chain: c }); res.set("cache-control", "public, max-age=60, s-maxage=600, stale-while-revalidate=300"); res.json(d); }
+  catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
+});
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.5.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, a Solana token check (SPL, Token-2022, pump.fun), URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration).",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.6.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, a Solana token check (SPL, Token-2022, pump.fun), URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 both; free delayed sample at GET /free/launches).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,
     "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: r.price.replace("$", "") }, protocols: [{ x402: {} }] },
-    parameters: [{ name: r.param, in: "query", required: true, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }, ...(r.extra ? [{ name: r.extra.name, in: "query", required: false, description: r.extra.desc, schema: { type: "string", pattern: r.extra.pattern } }] : [])],
+    parameters: [{ name: r.param, in: "query", required: !r.optional, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }, ...(r.extra ? [{ name: r.extra.name, in: "query", required: false, description: r.extra.desc, schema: { type: "string", pattern: r.extra.pattern } }] : [])],
     responses: { 200: { description: "OK", content: { "application/json": { schema: { type: "object" }, example: r.out } } }, 400: { description: "Invalid input (no charge)" }, 402: { description: "Payment Required" } } } }])) }));
 app.get("/.well-known/mcp-registry-auth", (_, res) => res.type("text/plain").send("v=MCPv1; k=ed25519; p=Gkkq+F+PxBJofd16J+xJpg6E+nXM7MWO29cD3+IKe0U="));
 app.get("/.well-known/x402", (_, res) => res.json({ version: 1, resources: ROUTES.map(r => ORIGIN + r.path) }));
@@ -152,12 +178,12 @@ async function buildMcp() {
   for (const r of ROUTES) wrap[r.key] = createPaymentWrapper(server, {
     accepts: await server.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo: PAY_TO, price: r.price }),
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
-    extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
+    extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
   return () => {
     const m = new McpServer({ name: "automaton-onchain-tools", version: "1.5.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
-      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await r.fn(a[r.param], a)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
+      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await r.fn(a[r.param], a)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
     m.tool("ping", "Free health check.", {}, async () => txt({ ok: true }));
     return m;
   };

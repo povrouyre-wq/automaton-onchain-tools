@@ -35,7 +35,7 @@ async function mc(C, calls) { // multicall with allowFailure
 }
 
 // Native price in the chain's main stablecoin from the deepest native/stable V3 pool (onchain, no price API).
-async function nativeUsd(chain) {
+export async function nativeUsd(chain) {
   const C = CHAINS[chain], D = DEX[chain], [st, sd] = D.stable, v3 = D.v3[0];
   const pools = (await mc(C, v3.fees.map(f => ({ address: v3.factory, abi: A, functionName: "getPool", args: [D.wnative, st, f] })))).filter(p => p && p !== ZERO);
   if (!pools.length) return null;
