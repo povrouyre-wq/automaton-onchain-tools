@@ -22,6 +22,9 @@ const OFFICIAL = {
     "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", "9gP2kCy3wA1ctvYWQk75guqXuHfrEomqydHLtcTCqiLa", "EjmyN6qEC1Tf1JxiG1ae7UTJhUxSwk1TCWNWqxWV4J6o", // USDS, WBNB (Wormhole), DAI (Wormhole)
     "9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u"], // FDUSD
 };
+// Native-coin placeholders (Uniswap v4 / GeckoTerminal use the zero address for native ETH/BNB; aggregators use 0xEeee...).
+const NATIVE = ["0x0000000000000000000000000000000000000000", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"];
+for (const c of ["base", "bsc", "ethereum"]) OFFICIAL[c].push(...NATIVE);
 export const OFFICIAL_ADDRESSES = Object.fromEntries(Object.entries(OFFICIAL).map(([c, a]) => [c, new Set(a.map(x => x.toLowerCase()))]));
 
 // Normalized form -> display symbol. Symbols and well-known full names.

@@ -40,7 +40,7 @@ test("fake majors are flagged on every chain, symbol or name", () => {
     ["solana", FAKE_SOL, { name: "First Digital USD", symbol: "FD" }, "FDUSD"], ["base", FAKE_EVM, { name: "Dai", symbol: "dai" }, "DAI"], ["bsc", FAKE_EVM, { name: "busd", symbol: "BUSD" }, "BUSD"]];
   for (const [c, a, t, sym] of cases) { const f = impersonation(c, a, t); assert.ok(f, `${c} ${JSON.stringify(t)} should be flagged`); assert.equal(f.copies, sym); assert.equal(f.severity, "medium");
     assert.equal(f.note, `name copies a major token (${sym}) but isn't the real contract`); }
-  // A real token's address on another chain is still a copy there.
+  // A real token's address on another chain is still a copy there; a native placeholder doesn't count on Solana.
   assert.ok(impersonation("bsc", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", { symbol: "USDC" }));
 });
 test("ordinary tokens are not flagged", () => {
@@ -52,6 +52,9 @@ test("real official tokens are never flagged (any case of address)", () => {
   for (const [c, list] of Object.entries(REAL)) for (const [a, symbol, name] of list) {
     for (const addr of [a, a.toLowerCase(), c === "solana" ? a : a.toUpperCase().replace(/^0X/, "0x")]) assert.equal(impersonation(c, addr, { name, symbol }), null, `${c} ${symbol} ${addr}`);
     assert.ok(OFFICIAL_ADDRESSES[c].has(a.toLowerCase())); n++; }
+  // Native ETH/BNB placeholders, as GeckoTerminal reports them for Uniswap v4 native pools.
+  for (const [c, symbol, name] of [["base", "ETH", "Ether"], ["bsc", "BNB", "BNB"], ["ethereum", "ETH", "Ether"]]) for (const a of ["0x0000000000000000000000000000000000000000", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"]) {
+    assert.equal(impersonation(c, a, { name, symbol }), null, `${c} native ${a}`); n++; }
   assert.equal(n, Object.values(OFFICIAL_ADDRESSES).reduce((s, x) => s + x.size, 0), "every official address has a fixture");
 });
 test("atLeastMedium never lowers risk", () => {
