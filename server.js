@@ -127,7 +127,22 @@ ROUTES.push(
 for (const r of ROUTES) if (r.desc.length > 500) console.error(`desc too long (${r.desc.length}) for ${r.path}: CDP will reject payments`);
 const app = express();
 app.set("trust proxy", true);
-const server = new x402ResourceServer(new HTTPFacilitatorClient(facCfg)).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
+// Never let a slow facilitator block the 402. On a cold instance the x402 middleware awaits facilitator /supported before answering
+// (default timeout 90 s, plus 429 back-off). We wait at most SUPPORTED_WAIT_MS, then fall back to the one kind we use; the exact-EVM
+// scheme ignores supported-kind details when building requirements, so the 402 is identical. verify/settle still go to the real facilitator.
+const SUPPORTED_WAIT_MS = Number(process.env.SUPPORTED_WAIT_MS || 2000);
+export const SUPPORTED_FALLBACK = { kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK }], extensions: [], signers: {} };
+const facClient = new HTTPFacilitatorClient(facCfg); let supportedCache = null;
+const liveSupported = facClient.getSupported.bind(facClient);
+facClient.getSupported = () => {
+  if (supportedCache) return Promise.resolve(supportedCache);
+  const live = liveSupported().then(x => (supportedCache = x)); live.catch(e => console.warn("facilitator /supported unavailable, using fallback:", String(e?.message || e).slice(0, 160)));
+  return Promise.race([live, new Promise(r => setTimeout(() => r(SUPPORTED_FALLBACK), SUPPORTED_WAIT_MS).unref?.())]).catch(() => SUPPORTED_FALLBACK);
+};
+// Hard cap per paid call, well under the 60 s function limit. A timed-out call answers 504 and, being >= 400, is never settled (no charge).
+const ROUTE_DEADLINE_MS = Number(process.env.ROUTE_DEADLINE_MS || 25000);
+export const withDeadline = (p, ms = ROUTE_DEADLINE_MS) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error(`upstream timeout after ${ms} ms`), { status: 504 })), ms); })]).finally(() => clearTimeout(t)); };
+const server = new x402ResourceServer(facClient).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
 server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it, so the facilitator can catalog
   const p = ctx?.paymentPayload; if (!p || p.resource?.url) return;
   const tc = ctx.transportContext || {}; const path = tc.request?.path || tc.adapter?.getPath?.() || tc.path || "";
@@ -161,8 +176,8 @@ app.use((req, res, next) => { if (!req.path.startsWith("/v1/")) return next(); c
     return end.call(this, chunk, ...rest); }; next(); });
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
-  try { res.json(await r.fn(req.query[r.param], req.query)); }
-  catch (e) { res.status(e.status || 404).json({ error: e.status === 400 ? e.message : "not found or upstream error", detail: String(e.shortMessage || e.message).slice(0, 300) }); }
+  try { res.json(await withDeadline(r.fn(req.query[r.param], req.query))); }
+  catch (e) { res.status(e.status || 404).json({ error: e.status === 400 ? e.message : e.status === 504 ? "upstream timeout, not charged" : "not found or upstream error", detail: String(e.shortMessage || e.message).slice(0, 300) }); }
 });
 
 // Free delayed launch feed (for posts, bots, and trying before buying). CDN-cached 10 min.
@@ -196,7 +211,7 @@ async function buildMcp() {
     const m = new McpServer({ name: "automaton-onchain-tools", version: "1.8.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
-      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await r.fn(a[r.param], a)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
+      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a))); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
     m.tool("ping", "Free health check.", {}, async () => txt({ ok: true }));
     return m;
   };

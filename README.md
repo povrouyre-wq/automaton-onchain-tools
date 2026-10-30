@@ -64,6 +64,8 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 - pump.fun: the bonding-curve PDA tells whether the coin is still on the curve (with approximate progress) or graduated. For graduated coins the PumpSwap pool's LP mint supply is compared with the LP originally minted to get the burned share. LP lock for non-pump.fun tokens is not determined. There is no sell simulation on Solana.
 - RPC: `SOLANA_RPC` (comma-separated), default `api.mainnet-beta.solana.com` then `public.rpc.solanavibestation.com` as fallback. Tests: `tests/solana.test.mjs` (BONK, USDC, Fartcoin, a PumpSwap-graduated coin and a fresh on-curve pump.fun coin).
 
+**Timeouts:** the 402 never waits on the facilitator for more than ~2 s on a cold start (it falls back to the one payment kind we use, exact USDC on Base; verify/settle still go to the real facilitator). Every RPC call has a 4 s timeout (`RPC_TIMEOUT_MS`) and falls through to the next public RPC for that chain, and each paid call is capped at 25 s (`ROUTE_DEADLINE_MS`); a capped call answers `504` and is not settled, so you aren't charged. Regression tests: `tests/resilience.test.mjs`.
+
 A bare request with no payment returns `402 Payment Required` along with the payment requirements. If the input is invalid, you get a `400` and are not charged.
 
 ## Use over HTTP (x402)
