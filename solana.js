@@ -3,6 +3,7 @@
 // top-holder concentration (getTokenLargestAccounts, pools/curve excluded where identifiable),
 // pump.fun bonding-curve status and, for graduated coins, the canonical PumpSwap pool's LP burn share.
 import { createHash } from "node:crypto";
+import { impersonation } from "./impersonation.js";
 
 export const SOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const RPCS = (process.env.SOLANA_RPC || "https://api.mainnet-beta.solana.com,https://public.rpc.solanavibestation.com").split(",").map(s => s.trim()).filter(Boolean);
@@ -122,6 +123,7 @@ export async function solanaToken(mint) {
     if (!token.name) Object.assign(token, { name: tm.name, symbol: tm.symbol, uri: tm.uri }); }
   if (!metaR.ok && !tm) could.push("Couldn't read Metaplex metadata (RPC error), so name/symbol and mutability are unknown.");
   else if (!metadata.source) could.push("No Metaplex or Token-2022 metadata found, so name/symbol are unknown.");
+  const imp = impersonation("solana", mint, token); if (imp) findings.unshift({ severity: imp.severity, note: imp.note });
   if (metadata.isMutable) findings.push({ severity: "medium", note: `Metadata can still be changed (update authority ${metadata.updateAuthority === PUMP_AUTH ? "is pump.fun's" : metadata.updateAuthority}).` });
 
   // authorities

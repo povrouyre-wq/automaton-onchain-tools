@@ -3,6 +3,7 @@
 // through our existing risk checks (contractRisk for Base/BNB, solanaToken for Solana). Computed on request with short in-memory caches; no database.
 import { contractRisk } from "./lib.js";
 import { solanaToken } from "./solana.js";
+import { impersonation, atLeastMedium } from "./impersonation.js";
 
 const GT = "https://api.geckoterminal.com/api/v2";
 const NET = { base: "base", bsc: "bsc", solana: "solana" };
@@ -57,7 +58,17 @@ function summarize(chain, r) {
     pumpfun: r.pumpfun?.isPumpFun ? { status: r.pumpfun.status ?? null, progressPct: r.pumpfun.progressPct ?? null } : null,
     top10HoldersPct: r.holders?.top10ExcludingPoolsPct ?? null, largestWalletPct: r.holders?.largestWalletPct ?? null, flags };
 }
-function risk(chain, addr) {
+// Name/symbol copying a major asset (from GeckoTerminal's token info) at a non-official address: flag it first, risk at least medium.
+export function withImpersonation(chain, tok, r) {
+  const f = impersonation(chain, tok?.address, tok || {});
+  if (!f) return r;
+  const flags = (r.flags || []).some(x => x.note === f.note) ? r.flags : [{ severity: f.severity, note: f.note }, ...(r.flags || [])];
+  return { ...r, riskLevel: atLeastMedium(r.riskLevel), impersonates: f.copies, flags };
+}
+function risk(chain, tok) {
+  return riskRaw(chain, tok.address).then(r => withImpersonation(chain, tok, r));
+}
+function riskRaw(chain, addr) {
   const k = chain + ":" + addr.toLowerCase(), c = riskCache.get(k);
   if (c && Date.now() - c.at < 10 * 6e4) return c.p;
   const p = T(EVM.has(chain) ? contractRisk(chain, addr) : solanaToken(addr), EVM.has(chain) ? 12000 : 15000)
@@ -70,14 +81,14 @@ function risk(chain, addr) {
 async function pool(items, n, fn) { const out = new Array(items.length); let i = 0;
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k]); } })); return out; }
 
-const RISK_NOTE = "Risk flags are automated heuristics from public data at check time (Base and BNB Chain: bytecode selectors, proxy slots, owner(), Sourcify; Solana: mint/freeze authority, metadata mutability, Token-2022 extensions, holder concentration, pump.fun curve). Not an audit or financial advice. New tokens change fast; most launches fail.";
+const RISK_NOTE = "Risk flags are automated heuristics from public data at check time (Base and BNB Chain: bytecode selectors, proxy slots, owner(), Sourcify; Solana: mint/freeze authority, metadata mutability, Token-2022 extensions, holder concentration, pump.fun curve; all chains: name/symbol copying a major token like USDC at a non-official address). Not an audit or financial advice. New tokens change fast; most launches fail.";
 
 export async function launches({ chain = "all", limit = 10 } = {}) {
   const chains = chain === "all" ? FEED_CHAINS : [chain];
   limit = Math.max(1, Math.min(20, +limit || 10));
   const per = await Promise.all(chains.map(async c => {
     let list; try { list = rows(c, await gtPage(c, 1)).slice(0, limit); } catch (e) { return { chain: c, error: String(e.message), launches: [] }; }
-    const risks = await pool(list, c === "base" ? 10 : c === "bsc" ? 6 : 4, x => risk(c, x.token.address));
+    const risks = await pool(list, c === "base" ? 10 : c === "bsc" ? 6 : 4, x => risk(c, x.token));
     return { chain: c, launches: list.map((x, i) => ({ ...x, risk: risks[i] })) };
   }));
   const all = per.flatMap(p => p.launches).sort((a, b) => Date.parse(b.pool.createdAt || 0) - Date.parse(a.pool.createdAt || 0));
@@ -97,7 +108,7 @@ export async function launchesDelayed({ chain = "all", delayMin = 15, limit = 5 
     const minAge = EVM.has(c) ? cutoff : Infinity;
     const seen = new Set(); // pages can overlap as new pools shift pagination
     list = list.filter(x => x.pool.createdAt && Date.parse(x.pool.createdAt) <= minAge && !seen.has(x.token.address.toLowerCase()) && seen.add(x.token.address.toLowerCase())).slice(0, limit);
-    const risks = await pool(list, 4, x => risk(c, x.token.address));
+    const risks = await pool(list, 4, x => risk(c, x.token));
     return list.map((x, i) => ({ chain: c, token: x.token, dex: x.pool.dex, pool: x.pool.address, createdAt: x.pool.createdAt, liquidityUsd: x.pool.liquidityUsd,
       riskLevel: risks[i].riskLevel, flags: (risks[i].flags || []).filter(f => f.severity !== "info" || risks[i].riskLevel === "unknown").map(f => f.note).slice(0, 4) }));
   }));

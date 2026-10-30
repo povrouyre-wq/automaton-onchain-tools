@@ -1,6 +1,7 @@
 // Premium bundled reports: combine existing free-data tools into one plain-English answer.
 import { formatUnits, parseAbi } from "viem";
 import { CHAINS, approvals, inspect, contractRisk, portfolio } from "./lib.js";
+import { impersonation, atLeastMedium } from "./impersonation.js";
 const ZERO = "0x0000000000000000000000000000000000000000";
 const settle = p => p.then(v => ({ ok: true, v }), e => ({ ok: false, e: String(e.shortMessage || e.message).slice(0, 160) }));
 const DISC = "Automated report from free public onchain data. Heuristic, not an audit, not financial or security advice. No USD pricing; balances cover native coin plus major tokens only.";
@@ -47,6 +48,7 @@ export async function tokenReport(address, chain = "base") {
   const findings = [...(R.findings || [])];
   if (holders.ownerBalance?.pctOfSupply >= 10) findings.push({ severity: "high", note: `The owner wallet holds ${holders.ownerBalance.pctOfSupply}% of supply.` });
   let riskLevel = R.riskLevel; if (findings.some(f => f.severity === "high") && riskLevel !== "n/a") riskLevel = riskLevel === "low" ? "medium" : "high";
+  const imp = I.erc20 ? impersonation(chain, address, I.erc20) : null; if (imp) { findings.unshift({ severity: imp.severity, note: imp.note }); riskLevel = atLeastMedium(riskLevel); }
   const what = I.erc20 ? `${I.erc20.name ?? "Unnamed"} (${I.erc20.symbol}), an ERC-20 on ${N} with ${I.erc20.totalSupply ?? "unknown"} supply` : `${I.type} on ${N} (not an ERC-20)`;
   const summary = [`${what}.`, I.proxy ? `It is upgradeable (${I.proxy.standard}), so its code can change.` : "Not an upgradeable proxy.",
     R.owner === ZERO ? "Ownership is renounced." : R.owner ? `Controlled by ${R.ownerType === "eoa" ? "a single wallet" : "a contract"} ${R.owner}.` : "No owner() found.",
