@@ -1,13 +1,13 @@
 // Premium bundled reports: combine existing free-data tools into one plain-English answer.
 import { formatUnits, parseAbi } from "viem";
-import { CHAINS, approvals, inspect, contractRisk, portfolio } from "./lib.js";
+import { CHAINS, CORE_CHAINS, approvals, inspect, contractRisk, portfolio } from "./lib.js";
 import { impersonation, atLeastMedium } from "./impersonation.js";
 const ZERO = "0x0000000000000000000000000000000000000000";
 const settle = p => p.then(v => ({ ok: true, v }), e => ({ ok: false, e: String(e.shortMessage || e.message).slice(0, 160) }));
 const DISC = "Automated report from free public onchain data. Heuristic, not an audit, not financial or security advice. No USD pricing; balances cover native coin plus major tokens only.";
 
 export async function walletReport(address) {
-  const chains = Object.keys(CHAINS);
+  const chains = CORE_CHAINS;
   const [pf, ...rest] = await Promise.all([settle(portfolio(address)), ...chains.map(c => settle(inspect(c, address))), ...chains.map(c => settle(approvals(c, address)))]);
   const ins = Object.fromEntries(chains.map((c, i) => [c, rest[i]])), apr = Object.fromEntries(chains.map((c, i) => [c, rest[chains.length + i]]));
   const findings = []; const say = (sev, note) => findings.push({ severity: sev, note });

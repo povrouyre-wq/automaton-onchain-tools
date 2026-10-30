@@ -21,10 +21,28 @@ const OFFICIAL = {
     "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij", "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh", "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT", // cbBTC, WBTC (Wormhole), USDe
     "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", "9gP2kCy3wA1ctvYWQk75guqXuHfrEomqydHLtcTCqiLa", "EjmyN6qEC1Tf1JxiG1ae7UTJhUxSwk1TCWNWqxWV4J6o", // USDS, WBNB (Wormhole), DAI (Wormhole)
     "9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u"], // FDUSD
+  // Lookup-only chains. Sources: Circle (USDC, EURC), USDT0 deployments, Tether, Paxos (PYUSD), Lido (wstETH), Ethena (USDe), Coinbase (cbBTC),
+  // chain canonical bridges/wrappers; every address checked onchain (symbol, name, decimals) Oct 30 2026.
+  arbitrum: ["0xaf88d065e77c8cC2239327C5EDb3A432268e5831", "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8", "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", // USDC, USDC.e, USDT0
+    "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1", "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f", "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", // WETH, WBTC, DAI
+    "0x912CE59144191C1204E64559FE8253a0e49E6548", "0x5979D7b546E38E414F7E9822514be443A4800529", "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", // ARB, wstETH, cbBTC
+    "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34", "0x46850aD61C2B7d64d08c9C754F45254596696984"], // USDe, PYUSD
+  optimism: ["0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", "0x7F5c764cBc14f9669B88837ca1490cCa17c31607", "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", // USDC, USDC.e, USDT
+    "0x01bFF41798a0BcF287b996046Ca68b395DbC1071", "0x4200000000000000000000000000000000000006", "0x68f180fcCe6836688e9084f035309E29Bf0A2095", // USDT0, WETH, WBTC
+    "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", "0x4200000000000000000000000000000000000042", "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb", // DAI, OP, wstETH
+    "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"], // USDe
+  polygon: ["0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", // USDC, USDC.e, USDT0
+    "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6", // WETH, WPOL, WBTC
+    "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", "0x03b54A6e9a984069379fae1a4fC4dBAE93B3bCCD", "0x99aF3EeA856556646C98c8B9b2548Fe815240750", // DAI, wstETH, PYUSD
+    "0x0000000000000000000000000000000000001010"], // POL (native token contract)
+  avalanche: ["0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7", "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664", // USDC, USDt, USDC.e
+    "0xc7198437980c041c805A1EDcbA50c1Ce5db95118", "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7", "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB", // USDT.e, WAVAX, WETH.e
+    "0x152b9d0FdC40C096757F570A51E494bd4b943E50", "0x50b7545627a5162F82A992c33b87aDc75187B218", "0xd586E7F844cEa2F87f50152665BCbc2C279D8d70", // BTC.b, WBTC.e, DAI.e
+    "0xC891EB4cbdEFf6e073e859e987815Ed1505c2ACD", "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"], // EURC, USDe
 };
 // Native-coin placeholders (Uniswap v4 / GeckoTerminal use the zero address for native ETH/BNB; aggregators use 0xEeee...).
 const NATIVE = ["0x0000000000000000000000000000000000000000", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"];
-for (const c of ["base", "bsc", "ethereum"]) OFFICIAL[c].push(...NATIVE);
+for (const c of ["base", "bsc", "ethereum", "arbitrum", "optimism", "polygon", "avalanche"]) OFFICIAL[c].push(...NATIVE);
 export const OFFICIAL_ADDRESSES = Object.fromEntries(Object.entries(OFFICIAL).map(([c, a]) => [c, new Set(a.map(x => x.toLowerCase()))]));
 
 // Normalized form -> display symbol. Symbols and well-known full names.
@@ -33,6 +51,14 @@ const MAJOR = Object.fromEntries(["USDC", "USDT", "ETH", "WETH", "BTC", "WBTC", 
 Object.assign(MAJOR, { USDCOIN: "USDC", TETHER: "USDT", TETHERUSD: "USDT", ETHER: "ETH", ETHEREUM: "ETH", WRAPPEDETHER: "WETH", WRAPPEDETH: "WETH", BITCOIN: "BTC",
   WRAPPEDBITCOIN: "WBTC", WRAPPEDBTC: "WBTC", SOLANA: "SOL", WRAPPEDSOL: "WSOL", WRAPPEDSOLANA: "WSOL", BINANCECOIN: "BNB", WRAPPEDBNB: "WBNB", DAISTABLECOIN: "DAI",
   BINANCEUSD: "BUSD", FIRSTDIGITALUSD: "FDUSD", PAYPALUSD: "PYUSD", WORLDLIBERTYFINANCIALUSD: "USD1", COINBASEWRAPPEDBTC: "cbBTC", EUROCOIN: "EURC", EUROC: "EURC" });
+
+// Extra majors checked only on their home chain (so e.g. Binance-Peg AVAX on BNB Chain isn't affected).
+const CHAIN_MAJOR = {
+  arbitrum: { ARB: "ARB", ARBITRUM: "ARB", USDT0: "USDT0" },
+  optimism: { OP: "OP", OPTIMISM: "OP", USDT0: "USDT0" },
+  polygon: { POL: "POL", WPOL: "WPOL", MATIC: "MATIC", WMATIC: "WMATIC", POLYGON: "POL", POLYGONECOSYSTEMTOKEN: "POL", WRAPPEDPOL: "WPOL", WRAPPEDPOLYGONECOSYSTEMTOKEN: "WPOL", WRAPPEDMATIC: "WMATIC", USDT0: "USDT0" },
+  avalanche: { AVAX: "AVAX", WAVAX: "WAVAX", AVALANCHE: "AVAX", WRAPPEDAVAX: "WAVAX" },
+};
 
 // Cyrillic/Greek letters that look like Latin ones (e.g. "USDС" with a Cyrillic С).
 const LOOK = { "А": "A", "В": "B", "С": "C", "Е": "E", "Н": "H", "І": "I", "Ј": "J", "К": "K", "М": "M", "О": "O", "Р": "P", "Ѕ": "S", "Т": "T", "Х": "X", "У": "Y",
@@ -45,7 +71,7 @@ export const IMPERSONATION_NOTE = sym => `name copies a major token (${sym}) but
 export function impersonation(chain, address, { name, symbol } = {}) {
   if (!address) return null;
   if (OFFICIAL_ADDRESSES[chain]?.has(String(address).toLowerCase())) return null;
-  for (const v of [symbol, name]) { const sym = MAJOR[normalize(v)]; if (sym) return { severity: "medium", note: IMPERSONATION_NOTE(sym), copies: sym }; }
+  for (const v of [symbol, name]) { const n = normalize(v), sym = MAJOR[n] ?? CHAIN_MAJOR[chain]?.[n]; if (sym) return { severity: "medium", note: IMPERSONATION_NOTE(sym), copies: sym }; }
   return null;
 }
 

@@ -16,7 +16,7 @@ import { walletReport, tokenReport } from "./reports.js";
 import { deepScan } from "./deepscan.js";
 import { solanaToken, isPubkey, SOL_ADDR_RE } from "./solana.js";
 import { launches, launchesDelayed } from "./launches.js";
-import { CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
+import { CHAINS, CORE_CHAINS, LOOKUP_ONLY_CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
 const PAY_TO = process.env.PAY_TO || "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717";
@@ -33,25 +33,31 @@ const HASH = /^0x[0-9a-fA-F]{64}$/, ADDR = /^0x[0-9a-fA-F]{40}$/, URLRE = /^.{4,
 const HP = "^0x[0-9a-fA-F]{64}$", AP = "^0x[0-9a-fA-F]{40}$";
 const EX = { base: { tx: "0x45be0cb297d8e90038b2113ea608e7a80d84c5e8d9e9b649a2d1f027e9243d6e", token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" },
   ethereum: { tx: "0xe85c8cd1d3f529cd7808ecdadad807f12f50aeff249784ed73e9d1f4f6bc2f2f", token: "0xdAC17F958D2ee523a2206206994597C13D831ec7", wallet: "0x28C6c06298d514Db089934071355E5743bf21d60" },
-  bsc: { tx: "0xa98a72c04fb6ae896f69aa5d4488bda5e9efc34ed9b69e51cfc5b6c09100fac2", token: "0x55d398326f99059fF775485246999027B3197955", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" } };
+  bsc: { tx: "0xa98a72c04fb6ae896f69aa5d4488bda5e9efc34ed9b69e51cfc5b6c09100fac2", token: "0x55d398326f99059fF775485246999027B3197955", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" },
+  arbitrum: { tx: "0x53869f15db3a9d9cf8dd05c7b5898a3b6df3866f25bebe4aa2e2f530e31d4f52", token: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" },
+  optimism: { tx: "0xc0f955bb7f363652ec6d91406b7f14be19bd0d6bbcb6ae370f1d2008b86980e1", token: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" },
+  polygon: { tx: "0x7a0c80c26ed4e6ed36746203bb7777fdd9d960d57496192b041e19e3a21ffc7a", token: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" },
+  avalanche: { tx: "0xbd86b3d8d2a773d4381e1736863280731e80ae8ca88ccb1a5639a5e762f898dd", token: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", wallet: "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717" } };
 
 // Route table: one fixed resource URL per endpoint.
 // Advertised patterns must be RE2-compatible (CDP Bazaar): no {m,n} repeat counts > 1000; use maxLength instead.
 const ROUTES = [];
 for (const [c, C] of Object.entries(CHAINS)) {
   const N = C.name, legacy = c === "base"; // keep original Base tool names
+  // Lookup-only chains (Arbitrum, Optimism, Polygon, Avalanche) sell all four lookups at $0.005 and carry the copycat flag.
+  const extra = LOOKUP_ONLY_CHAINS.includes(c), P1 = extra ? PRICE_SMALL : PRICE, cc = extra ? ", and a flag for copycats of major tokens (USDC, USDT, WETH...) at a non-official address" : "";
   ROUTES.push(
-    { key: `${c}_tx_explain`, path: `/v1/${c}/tx`, param: "hash", re: HASH, pattern: HP, price: PRICE, fn: v => explain(c, v), name: `${N} Tx Explainer`, pdesc: `${N} transaction hash`, example: EX[c].tx,
+    { key: `${c}_tx_explain`, path: `/v1/${c}/tx`, param: "hash", re: HASH, pattern: HP, price: P1, fn: v => explain(c, v), name: `${N} Tx Explainer`, pdesc: `${N} transaction hash`, example: EX[c].tx,
       desc: `Explain a ${N} transaction: status, fee, decoded method + args (openchain signature DB), and ERC-20 transfers with symbols and human amounts.`,
       out: { chain: c, status: "success", method: "transfer(address,uint256)", fee: "0.00000027", tokenTransfers: [{ symbol: "USDC", amount: "1.028272", from: "0x...", to: "0x..." }], summary: "success · transfer · 1 token transfer(s)" } },
     { key: `${c}_token_approvals`, path: `/v1/${c}/approvals`, param: "address", re: ADDR, pattern: AP, price: PRICE_SMALL, fn: v => approvals(c, v), name: `${N} Token Approval Check`, pdesc: `${N} wallet address (owner)`, example: EX[c].wallet,
       desc: `Check a ${N} wallet's ERC-20 approvals: allowances for ${Object.keys(C.tokens).length} major tokens (${Object.keys(C.tokens).slice(0, 4).join(", ")}...) to common spenders (${Object.keys(C.spenders).slice(0, 4).join(", ")}...); flags unlimited approvals.`,
       out: { owner: "0x...", checkedPairs: 64, nonZeroApprovals: [{ token: "USDC", spender: "Permit2", unlimited: true, allowance: "unlimited" }], unlimitedCount: 1 } },
     { key: `${c}_address_inspect`, path: `/v1/${c}/address`, param: "address", re: ADDR, pattern: AP, price: PRICE_SMALL, fn: v => inspect(c, v), name: `${N} Address Inspector`, pdesc: `${N} address (EOA or contract)`, example: EX[c].token,
-      desc: `Inspect any ${N} address: EOA vs contract vs EIP-7702 delegated, ${C.native} balance, nonce, proxy implementation (EIP-1967/1167/zos), and ERC-20 name/symbol/decimals/supply.`,
+      desc: `Inspect any ${N} address: EOA vs contract vs EIP-7702 delegated, ${C.native} balance, nonce, proxy implementation (EIP-1967/1167/zos), and ERC-20 name/symbol/decimals/supply${cc}.`,
       out: { type: "contract", nativeBalance: "0", proxy: { standard: "EIP-1967", implementation: "0x..." }, erc20: { name: "USD Coin", symbol: "USDC", decimals: 6 }, summary: "contract (EIP-1967 proxy) · ERC-20 USDC" } },
-    { key: `${c}_contract_risk`, path: `/v1/${c}/contract-risk`, param: "address", re: ADDR, pattern: AP, price: PRICE, fn: v => contractRisk(c, v), name: `${N} Contract Risk Heuristics`, pdesc: `${N} contract address`, example: EX[c].token,
-      desc: `Heuristic risk flags for a ${N} contract from free public data: Sourcify verification, upgradeable proxy + admin, owner type, mint/pause/blacklist/fee selectors, bytecode size. Not an audit or financial advice.`,
+    { key: `${c}_contract_risk`, path: `/v1/${c}/contract-risk`, param: "address", re: ADDR, pattern: AP, price: P1, fn: v => contractRisk(c, v), name: `${N} Contract Risk Heuristics`, pdesc: `${N} contract address`, example: EX[c].token,
+      desc: `Heuristic risk flags for a ${N} contract from free public data: Sourcify verification, upgradeable proxy + admin, owner type, mint/pause/blacklist/fee selectors, bytecode size${cc}. Not an audit or financial advice.`,
       out: { riskLevel: "medium", heuristicScore: 5, sourcify: { contract: { verified: true } }, proxy: { standard: "EIP-1967" }, ownerType: "eoa", capabilities: { mint: ["mint(address,uint256)"] }, findings: [{ severity: "medium", note: "Mint function present" }], disclaimer: "..." } });
 }
 ROUTES.push({ key: "url_safety_check", path: "/v1/url-safety", param: "url", re: URLRE, pattern: "^.{4,}$", maxLen: 2048, price: PRICE_SMALL, fn: async v => { const r = await urlSafety(v); if (!r) throw Object.assign(new Error("invalid http(s) URL"), { status: 400 }); return r; },
@@ -127,7 +133,7 @@ server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it
   const tc = ctx.transportContext || {}; const path = tc.request?.path || tc.adapter?.getPath?.() || tc.path || "";
   const r = ROUTES.find(r => path === r.path); if (r) p.resource = { url: ORIGIN + r.path, description: r.desc, mimeType: "application/json" };
 });
-const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"],
+const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"], lookupOnlyChains: LOOKUP_ONLY_CHAINS,
   endpoints: ROUTES.map(r => ({ url: `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
 app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL });
 
@@ -166,8 +172,8 @@ app.get("/free/launches", async (req, res) => {
   catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
 });
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.7.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, a Solana token check (SPL, Token-2022, pump.fun), URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches).",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.8.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,
@@ -187,7 +193,7 @@ async function buildMcp() {
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
     extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.7.0" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.8.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
       m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await r.fn(a[r.param], a)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
