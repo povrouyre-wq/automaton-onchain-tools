@@ -10,7 +10,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 
 ## Endpoints
 
-`{chain}` is one of `base`, `ethereum` or `bsc`. With the Solana token check that gives 21 paid tools.
+`{chain}` is one of `base`, `ethereum` or `bsc`. With the Solana token check and the launch feeds that gives 25 paid tools.
 
 | Tool | Endpoint | Price | What it does |
 |---|---|---|---|
@@ -26,18 +26,19 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 | Wallet Security Report | `GET /v1/wallet-report?address=0x…` | $0.25 | One-call wallet report across 3 chains: balances, approvals, 7702 delegation, plain-English summary |
 | Token Due-Diligence Report | `GET /v1/token-report?address=0x…&chain=base` | $0.25 | Metadata, proxy, owner/admin, owner holdings, Sourcify, mint/pause/blacklist/fee flags |
 | **Solana Token Check** | `GET /v1/solana/token?address=<mint>` | $0.005 | SPL / Token-2022 / pump.fun mint: mint + freeze authority, metadata mutability (Metaplex isMutable / Token-2022 metadata), risky Token-2022 extensions (transfer fee, permanent delegate, transfer hook, pausable, default-frozen), top-holder concentration with pools and the bonding curve excluded where identifiable, pump.fun curve progress or PumpSwap LP burn share. Free public Solana RPC only; lists what it couldn't determine |
-| **Launch Feed (Base + Solana)** | `GET /v1/launches?chain=all&limit=10` | $0.02 | Newest token launches on Base and Solana (mostly pump.fun), up to 20 per chain, each run through our risk check at request time: pool DEX, age, liquidity, FDV, 1h buys/sells, plus risk level and flags |
+| **Launch Feed (Base + BNB + Solana)** | `GET /v1/launches?chain=all&limit=10` | $0.02 | Newest token launches on Base, BNB Chain (four.meme, PancakeSwap) and Solana (mostly pump.fun), up to 20 per chain, each run through our risk check at request time: pool DEX, age, liquidity, FDV, 1h buys/sells, plus risk level and flags |
 | **Base Launch Feed** | `GET /v1/base/launches?limit=10` | $0.01 | Base only: verified source, upgradeable proxy, owner type, mint/pause/blacklist/fee selectors on each new token (B20 native tokens are labeled as not checkable by bytecode) |
+| **BNB Chain Launch Feed** | `GET /v1/bsc/launches?limit=10` | $0.01 | BNB Chain only (four.meme bonding curves, PancakeSwap v2/v3/Infinity, Uniswap v4): verified source, upgradeable proxy, owner type, mint/pause/blacklist/fee selectors on each new token |
 | **Solana Launch Feed** | `GET /v1/solana/launches?limit=10` | $0.01 | Solana only: mint/freeze authority, metadata mutability, Token-2022 extensions, holder concentration, pump.fun curve progress on each new mint |
 | **Token Deep Scan** | `GET /v1/token/deep-scan?address=0x…&chain=base` | $1.50 | Simulated buy + sell against the main DEX pool (honeypot and buy/sell tax), main pool liquidity in USD, V2 LP burned/locked share, top-holder concentration, owner powers, and a list of what it couldn't determine |
 
 ### How the launch feed works
 
-- **Source:** GeckoTerminal's free public `new_pools` API for `base` and `solana` (newest pools first, deduplicated to one row per new token, majors like WETH/USDC/SOL skipped). On Base that covers Uniswap v2/v3/v4, Aerodrome, Bankr, Clanker-style launchpads and anything else GeckoTerminal indexes; on Solana it is mostly pump.fun bonding curves plus PumpSwap/Meteora pools. Data by GeckoTerminal.
-- **Risk:** each token goes through the same code as `/v1/base/contract-risk` or `/v1/solana/token`, at request time, cached about 10 minutes per token. Results are summarized to a risk level plus flags.
+- **Source:** GeckoTerminal's free public `new_pools` API for `base`, `bsc` and `solana` (newest pools first, deduplicated to one row per new token, majors like WETH/WBNB/USDT/USDC/SOL skipped). On Base that covers Uniswap v2/v3/v4, Aerodrome, Bankr, Clanker-style launchpads and anything else GeckoTerminal indexes; on BNB Chain it is four.meme bonding curves, PancakeSwap v2/v3/Infinity and Uniswap v4; on Solana it is mostly pump.fun bonding curves plus PumpSwap/Meteora pools. Data by GeckoTerminal.
+- **Risk:** each token goes through the same code as `/v1/base/contract-risk`, `/v1/bsc/contract-risk` or `/v1/solana/token`, at request time, cached about 10 minutes per token. Results are summarized to a risk level plus flags.
 - **No database, no cron:** everything is computed when you call it, so rows are as fresh as GeckoTerminal (usually under a minute). Upstream pages are cached 45 s.
-- **Free delayed sample:** `GET /free/launches?chain=all|base|solana` returns up to 5 launches per chain with risk level and short flags. Base rows are at least 15 minutes old; Solana rows come from the oldest page GeckoTerminal serves (about 5–10 minutes) and the response is CDN-cached for 10 minutes, so roughly 5–20 minutes behind.
-- **Limits:** if GeckoTerminal is down or rate-limits us, the paid response says so in `errors`. B20 (Base native precompile) tokens can't be checked by bytecode and are marked `unknown`. Not an audit; most new launches fail.
+- **Free delayed sample:** `GET /free/launches?chain=all|base|bsc|solana` returns up to 5 launches per chain with risk level and short flags. Base and BNB Chain rows are at least 15 minutes old; Solana rows come from the oldest page GeckoTerminal serves (about 5–10 minutes) and the response is CDN-cached for 10 minutes, so roughly 5–20 minutes behind.
+- **Limits:** if GeckoTerminal is down or rate-limits us, the paid response says so in `errors`. B20 (Base native precompile) tokens can't be checked by bytecode and are marked `unknown`. On BNB Chain, four.meme tokens are owned by the launchpad contract while on the curve and its template exposes a blacklist-style function, so most of them show up as `medium`. Not an audit; most new launches fail.
 
 ### How the deep scan works
 
