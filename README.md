@@ -10,7 +10,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 
 ## Endpoints
 
-`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). With the Solana token check and the launch feeds that gives 41 paid tools.
+`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). With the Solana token check, the Solana address and delegate lookups and the launch feeds that gives 43 paid tools.
 
 **Arbitrum, Optimism, Polygon and Avalanche** get the four per-chain lookups only (tx, approvals, address, contract-risk), all at **$0.005**, and their address and contract-risk responses carry the copycat-token flag (see below). They are not part of the gas snapshot, portfolio, wallet/token reports, deep scan or launch feeds, which stay on Base, Ethereum and BNB Chain.
 
@@ -28,6 +28,8 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 | Wallet Security Report | `GET /v1/wallet-report?address=0x…` | $0.25 | One-call wallet report across 3 chains: balances, approvals, 7702 delegation, plain-English summary |
 | Token Due-Diligence Report | `GET /v1/token-report?address=0x…&chain=base` | $0.25 | Metadata, proxy, owner/admin, owner holdings, Sourcify, mint/pause/blacklist/fee flags |
 | **Solana Token Check** | `GET /v1/solana/token?address=<mint>` | $0.005 | SPL / Token-2022 / pump.fun mint: mint + freeze authority, metadata mutability (Metaplex isMutable / Token-2022 metadata), risky Token-2022 extensions (transfer fee, permanent delegate, transfer hook, pausable, default-frozen), top-holder concentration with pools and the bonding curve excluded where identifiable, pump.fun curve progress or PumpSwap LP burn share. Free public Solana RPC only; lists what it couldn't determine |
+| **Solana Address Lookup** | `GET /v1/solana/address?address=<pubkey>` | $0.005 | Account type (wallet, mint, token account, program, program-owned), SOL balance, SPL and Token-2022 balances with names (no USD prices), wallet age from the first transaction (lower bound for very busy wallets), last active, tx counts for 24h/7d/30d, recent transactions, flags for fake copycat tokens, frozen accounts and live delegates |
+| **Solana Token Delegate Check** | `GET /v1/solana/delegates?address=<pubkey>` | $0.005 | Live SPL / Token-2022 delegates (Solana's token approvals): how much each delegate can move, unlimited flag, whether it's a plain wallet, a known program (Jupiter, Raydium, Orca, Meteora, pump.fun) or unknown; also permanent delegates on held Token-2022 tokens and foreign close authorities. Risk level and how to revoke |
 | **Launch Feed (Base + BNB + Solana)** | `GET /v1/launches?chain=all&limit=10` | $0.02 | Newest token launches on Base, BNB Chain (four.meme, PancakeSwap) and Solana (mostly pump.fun), up to 20 per chain, each run through our risk check at request time: pool DEX, age, liquidity, FDV, 1h buys/sells, plus risk level and flags |
 | **Base Launch Feed** | `GET /v1/base/launches?limit=10` | $0.01 | Base only: verified source, upgradeable proxy, owner type, mint/pause/blacklist/fee selectors on each new token (B20 native tokens are labeled as not checkable by bytecode) |
 | **BNB Chain Launch Feed** | `GET /v1/bsc/launches?limit=10` | $0.01 | BNB Chain only (four.meme bonding curves, PancakeSwap v2/v3/Infinity, Uniswap v4): verified source, upgradeable proxy, owner type, mint/pause/blacklist/fee selectors on each new token |

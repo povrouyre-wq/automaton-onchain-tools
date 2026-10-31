@@ -1,6 +1,8 @@
 // Human-facing /check page: buy the $0.25 wallet or token report with a browser wallet (x402, USDC on Base).
 // Same paid endpoints agents use; the page just builds the x402 payment in the browser. Sources in check-src/.
 import { APP_JS, PAY_JS, PAY_VER } from "./check-assets.js";
+import { createHash } from "node:crypto";
+const APP_VER = createHash("sha256").update(APP_JS).digest("hex").slice(0, 8); // cache-bust app.js when only the page logic changes
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005" }) {
   const REPO = "https://github.com/povrouyre-wq/automaton-onchain-tools";
@@ -39,7 +41,7 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 </style></head><body><div class="w">
 <nav><a class="logo" href="/" style="color:var(--tx)">◆ <b>Automaton</b> Check</a><div><a href="/">For developers</a><a href="${REPO}">Source</a></div></nav>
 <h1>Check a wallet or token<br><span>before you trust it</span></h1>
-<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
+<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token, wallet or delegate check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
 
 <form id="form" class="panel" novalidate>
 <div class="kinds">
@@ -47,9 +49,11 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 <label><input type="radio" name="kind" value="token">Token check · ${esc(PRICE)}<small>Upgradeability, owner powers, mint/pause/blacklist flags, source verification, owner holdings.</small></label>
 <label><input type="radio" name="kind" value="deep">Token deep scan · ${esc(PRICE_DEEP)}<small>Everything in the token check plus a simulated buy+sell (honeypot and tax test), main pool liquidity, LP burn/lock and top-holder concentration.</small></label>
 <label><input type="radio" name="kind" value="solana">Solana token check · ${esc(PRICE_SOL)}<small>SPL, Token-2022 and pump.fun coins: mint/freeze authority, mutable metadata, risky Token-2022 extensions, holder concentration, bonding-curve or LP burn status.</small></label>
+<label><input type="radio" name="kind" value="soldelegates">Solana delegate check · ${esc(PRICE_SOL)}<small>Who can move tokens out of a Solana wallet: live token delegates (approvals), unlimited or unknown ones flagged, permanent delegates, how to revoke.</small></label>
+<label><input type="radio" name="kind" value="solwallet">Solana wallet lookup · ${esc(PRICE_SOL)}<small>SOL and token balances, wallet age, last active, recent transactions, fake copycat tokens held.</small></label>
 </div>
 <div class="row" id="chainRow" hidden><label for="chain">Chain the token is on</label><select id="chain"><option value="base">Base</option><option value="ethereum">Ethereum</option><option value="bsc">BNB Chain</option></select></div>
-<div class="row"><label for="addr" id="addrLabel">Wallet address</label><input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… (or a Solana mint address)"></div>
+<div class="row"><label for="addr" id="addrLabel">Wallet address</label><input id="addr" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… (or a Solana address)"></div>
 <button class="b1" type="submit">See price &amp; continue</button>
 <p class="muted small" style="margin:10px 0 0">Checking the price is free. Invalid addresses are rejected before any payment.</p>
 </form>
@@ -72,13 +76,13 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 <div class="panel"><h3 style="margin-top:0">How it works</h3><ul class="facts">
 <li>You need <b>at least ${esc(PRICE)} USDC on Base</b> in a browser wallet (MetaMask, Coinbase Wallet, Rabby…).</li>
 <li>Payments use the open <a href="https://www.x402.org" target="_blank" rel="noopener">x402</a> standard: you sign a one-time USDC transfer, not an unlimited approval.</li>
-<li>Reports are built live from free public data (public RPCs including public Solana RPC, Sourcify, openchain, Blockscout). The Solana check pays in USDC on Base too, so you need an EVM wallet. The deep scan's buy/sell test is a simulated call: nothing is traded onchain.</li>
+<li>Reports are built live from free public data (public RPCs including public Solana RPC, Sourcify, openchain, Blockscout). The Solana checks pay in USDC on Base too, so you need an EVM wallet. The deep scan's buy/sell test is a simulated call: nothing is traded onchain.</li>
 <li>Open source: every line is on <a href="${REPO}">GitHub</a>. No cookies, no analytics.</li>
 </ul>
 <p class="muted small">Reports are automated heuristics, not audits, and not financial or security advice. Balances cover native coins plus major tokens only, with no USD prices. Top-holder lists are only in the deep scan (full lists on Ethereum; on Base and BNB Chain they may be partial). Built and run by Automaton, an AI agent, under human oversight.</p></div>
 
 <footer><a href="/">Home</a><a href="/openapi.json">API</a><a href="${REPO}">GitHub</a><a href="/health">Status</a></footer>
-</div><script src="/check/app.js?v=${PAY_VER}" defer></script></body></html>`;
+</div><script src="/check/app.js?v=${PAY_VER}.${APP_VER}" defer></script></body></html>`;
   app.get("/check", (_, res) => res.set("Cache-Control", "public, max-age=300").type("html").send(html));
   app.get("/check/app.js", (_, res) => res.set("Cache-Control", "public, max-age=300").type("application/javascript").send(APP_JS));
   app.get("/check/pay.js", (_, res) => res.set("Cache-Control", "public, max-age=86400").type("application/javascript").send(PAY_JS));

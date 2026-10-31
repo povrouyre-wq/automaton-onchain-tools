@@ -14,16 +14,19 @@
 
   function eth() { return window.ethereum || null; }
   function setStatus(html, cls = "") { const s = $("status"); s.className = "status " + cls; s.innerHTML = html; s.hidden = !html; }
-  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet" || k === "solana";
-    $("addrLabel").textContent = k === "solana" ? "Solana token mint address" : k !== "wallet" ? "Token contract address" : "Wallet address";
-    $("addr").placeholder = k === "solana" ? "e.g. DezXAZ8z7Pnrn… or …pump" : k !== "wallet" ? "0x… token contract" : "0x… wallet"; reset(); }
+  const SOLW = { solwallet: 1, soldelegates: 1 };
+  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet" || k === "solana" || !!SOLW[k];
+    $("addrLabel").textContent = k === "solana" ? "Solana token mint address" : SOLW[k] ? "Solana wallet address" : k !== "wallet" ? "Token contract address" : "Wallet address";
+    $("addr").placeholder = k === "solana" ? "e.g. DezXAZ8z7Pnrn… or …pump" : SOLW[k] ? "Solana wallet (base58, no 0x)" : k !== "wallet" ? "0x… token contract" : "0x… wallet"; reset(); }
   function reset() { state.pr = null; $("payBox").hidden = true; $("report").hidden = true; setStatus(""); }
 
   function buildUrl() {
     const kind = document.querySelector("input[name=kind]:checked").value, a = $("addr").value.trim(), chain = $("chain").value;
     if (kind === "solana") { if (!SOL.test(a)) return { err: "That doesn't look like a Solana mint address (base58, 32 to 44 characters, no 0x)." };
       return { url: `/v1/solana/token?address=${a}`, kind, chain: "solana", addr: a }; }
-    if (SOL.test(a) && !a.startsWith("0x")) return { err: "That looks like a Solana address. Pick \"Solana token check\" above." };
+    if (SOLW[kind]) { if (!SOL.test(a)) return { err: "That doesn't look like a Solana address (base58, 32 to 44 characters, no 0x)." };
+      return { url: `/v1/solana/${kind === "solwallet" ? "address" : "delegates"}?address=${a}`, kind, chain: "solana", addr: a }; }
+    if (SOL.test(a) && !a.startsWith("0x")) return { err: "That looks like a Solana address. Pick one of the Solana options above." };
     if (!ADDR.test(a)) return { err: "That doesn't look like an address. It should start with 0x followed by 40 hex characters. ENS names aren't supported here." };
     const u = kind === "deep" ? `/v1/token/deep-scan?address=${a}&chain=${chain}` : kind === "token" ? `/v1/token-report?address=${a}&chain=${chain}` : `/v1/wallet-report?address=${a}`;
     return { url: u, kind, chain: kind !== "wallet" ? chain : null, addr: a };
@@ -43,7 +46,7 @@
       if (!acc) return setStatus("No Base USDC payment option offered.", "err");
       state = { ...state, pr, url: b.url, kind: b.kind, chain: b.chain };
       $("qPrice").textContent = fmtUsdc(acc.amount) + " USDC";
-      $("qWhat").textContent = b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
+      $("qWhat").textContent = b.kind === "solwallet" ? `Solana wallet lookup (SOL + token balances, wallet age, recent activity) for ${short(b.addr)}` : b.kind === "soldelegates" ? `Solana token delegate check (live approvals, unlimited and unknown delegates) for ${short(b.addr)}` : b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
       $("qPayTo").textContent = acc.payTo; $("qPayTo").href = "https://basescan.org/address/" + acc.payTo;
       $("payBox").hidden = false; setStatus("");
       updateWalletUi();
@@ -186,12 +189,33 @@
     if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
     return h;
   }
+  const sxl = a => a ? `<a href="https://solscan.io/account/${esc(a)}" target=_blank rel=noopener>${esc(short(a))}</a>` : "n/a";
+  function solAddrHtml(r) {
+    const A = r.age || {}, V = r.activity || {}, T = r.tokens || {};
+    const facts = [["Account type", esc(r.kind)], ["SOL balance", r.sol?.balance != null ? esc(r.sol.balance) + " SOL" : "unknown"],
+      ["Tokens with a balance", T.available ? esc(T.withBalance) + (T.emptyAccounts ? ` (+${esc(T.emptyAccounts)} empty accounts)` : "") : "unknown"],
+      ["Wallet age", A.firstSeen ? (A.complete ? `${esc(A.ageDays)} days (first tx ${esc(A.firstSeen.slice(0, 10))})` : `at least ${esc(A.ageDays)} days (since ${esc(A.firstSeen.slice(0, 10))} or earlier)`) : A.available ? "no transactions" : "unknown"],
+      ["Last active", esc(V.lastActive || "n/a")], ["Transactions 24h / 7d / 30d", V.available ? `${esc(V.last24h)} / ${esc(V.last7d)} / ${esc(V.last30d)}` : "unknown"],
+      ["Live token delegates", r.liveDelegates ? `<b class=bad>${esc(r.liveDelegates)}</b> (run the delegate check)` : "0"]];
+    let h = `<h3>Key facts</h3><table><tbody>${facts.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>`;
+    if ((T.list || []).length) h += `<h3>Token balances <small class=muted>(no USD prices${T.withBalance > T.shown ? `, first ${esc(T.shown)} shown` : ""})</small></h3><table><thead><tr><th>Token</th><th>Balance</th><th>Mint</th></tr></thead><tbody>${T.list.slice(0, 25).map(t => `<tr><td>${esc(t.symbol || t.name || "?")}${t.frozen ? " <span class=bad>(frozen)</span>" : ""}</td><td>${esc(t.balance)}</td><td>${sxl(t.mint)}</td></tr>`).join("")}</tbody></table>`;
+    if ((V.recent || []).length) h += `<h3>Recent transactions</h3><table><tbody>${V.recent.map(x => `<tr><td><a href="https://solscan.io/tx/${esc(x.signature)}" target=_blank rel=noopener>${esc(short(x.signature))}</a></td><td>${esc(x.time || "")}</td><td>${x.status === "failed" ? "<span class=bad>failed</span>" : "ok"}</td></tr>`).join("")}</tbody></table>`;
+    if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
+    return h;
+  }
+  function solDelHtml(r) {
+    let h = `<h3>Live delegates</h3>` + ((r.delegates || []).length ? `<table><thead><tr><th>Token</th><th>Delegate</th><th>Can move</th></tr></thead><tbody>${r.delegates.map(d => `<tr><td>${esc(d.symbol || short(d.mint))}</td><td>${sxl(d.delegate)} ${esc(d.known ? d.delegateLabel : "unknown " + d.delegateType)}</td><td>${d.unlimited ? "<b class=bad>UNLIMITED</b>" : esc(d.delegatedAmount)} <span class=muted>(balance ${esc(d.balance)})</span></td></tr>`).join("")}</tbody></table>` : `<p>None. Nobody can move tokens out of this wallet through a token delegate.</p>`);
+    if ((r.permanentDelegates || []).length) h += `<h3>Permanent delegates (Token-2022, can't be revoked)</h3><ul>${r.permanentDelegates.map(p => `<li>${esc(p.symbol || short(p.mint))}: ${sxl(p.permanentDelegate)}</li>`).join("")}</ul>`;
+    if (r.howToRevoke) h += `<h3>How to revoke</h3><p>${esc(r.howToRevoke)}</p>`;
+    if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
+    return h;
+  }
   function render(r, tx) {
     const lvl = String(r.riskLevel || "n/a").toLowerCase();
-    $("report").innerHTML = `<div class=rhead><span class="risk ${esc(lvl)}">Risk: ${esc(lvl)}</span>
-      <span class=muted>${r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address))}</span></div>
+    $("report").innerHTML = `<div class=rhead>${r.type === "solana-address" ? "" : `<span class="risk ${esc(lvl)}">Risk: ${esc(lvl)}</span>`}
+      <span class=muted>${r.type === "solana-address" ? "Solana wallet lookup" : r.type === "solana-delegates" ? "Solana delegate check" : r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address))}</span></div>
       <p class=summary>${esc(r.summary)}</p><h3>Findings</h3>${findingsHtml(r.findings)}
-      ${r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
+      ${r.type === "solana-address" ? solAddrHtml(r) : r.type === "solana-delegates" ? solDelHtml(r) : r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
       <p class="muted small">${esc(r.disclaimer || "")}</p>
       ${tx ? `<p class="muted small">Paid: <a href="https://basescan.org/tx/${esc(tx)}" target=_blank rel=noopener>view payment on Basescan</a></p>` : ""}
       <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
@@ -209,8 +233,8 @@
   $("addr").addEventListener("input", reset); $("chain").addEventListener("change", reset);
   $("form").addEventListener("submit", getQuote); $("connectBtn").addEventListener("click", connect); $("payBtn").addEventListener("click", pay);
   const q = new URLSearchParams(location.search);
-  if (["token", "deep", "solana"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
-  if (q.get("chain") === "solana") document.querySelector("input[value=solana]").checked = true;
+  if (["token", "deep", "solana", "solwallet", "soldelegates"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
+  if (q.get("chain") === "solana" && !SOLW[q.get("type")]) document.querySelector("input[value=solana]").checked = true;
   if (q.get("chain") && CN[q.get("chain")]) $("chain").value = q.get("chain");
   syncKind(); if (q.get("address")) $("addr").value = q.get("address");
   mobileLinks(); updateWalletUi();
