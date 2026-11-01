@@ -17,6 +17,7 @@ import { deepScan } from "./deepscan.js";
 import { solanaToken, isPubkey, SOL_ADDR_RE } from "./solana.js";
 import { solanaAddress, solanaDelegates } from "./solana-wallet.js";
 import { launches, launchesDelayed } from "./launches.js";
+import { approvalSweep } from "./sweep.js";
 import { CHAINS, CORE_CHAINS, LOOKUP_ONLY_CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -111,6 +112,18 @@ ROUTES.push(
     desc: "Check a Solana wallet's live SPL and Token-2022 token delegates (Solana's version of token approvals, the way drainers move funds): every token account with a delegate, how much it can move, UNLIMITED flag, whether the delegate is a plain wallet, a known program (Jupiter, Raydium, Orca...) or unknown. Also flags held Token-2022 tokens with a permanent delegate and foreign close authorities. Risk level and how to revoke.",
     out: { type: "solana-delegates", tokenAccountsChecked: 28, liveCount: 1, unlimitedCount: 1, unknownCount: 1, delegates: [{ mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", symbol: "USDC", delegate: "...", delegateType: "wallet", known: false, delegatedAmount: "unlimited", unlimited: true, severity: "high" }], riskLevel: "high", findings: [{ severity: "high", note: "USDC: an unknown wallet (...) can move UNLIMITED USDC from this wallet without asking..." }] } });
 
+// All-chains approval sweep ($0.02): every live ERC-20 allowance and NFT setApprovalForAll on all 7 EVM chains, ranked by risk, with revoke txs.
+const PRICE_SWEEP = process.env.PRICE_SWEEP || "$0.02";
+ROUTES.push({ key: "approval_sweep_all_chains", path: "/v1/approvals/sweep", param: "address", re: ADDR, pattern: AP, price: PRICE_SWEEP, deadline: 40000, fn: v => approvalSweep(v),
+  name: "All-Chain Approval Sweep + Revoke Txs (7 EVM chains)", pdesc: "EVM wallet address (owner)", example: EX.ethereum.wallet, tag: "approvals", chainLabel: "7 EVM chains",
+  tags: ["approvals", "revoke", "allowance", "nft", "drainer", "security", "wallet", "multichain", "evm", "crypto"],
+  desc: "One call sweeps a wallet on Base, Ethereum, BNB, Arbitrum, Optimism, Polygon and Avalanche for live ERC-20 allowances and NFT setApprovalForAll approvals (GoPlus + explorer event logs, each re-read onchain), ranks them by risk (unlimited, unknown spender, unverified or non-contract spender, flagged) and returns a ready-to-sign revoke tx (to, data, chainId, value 0) for each risky one. Per-chain status; partial results if a chain fails.",
+  out: { type: "approval-sweep", owner: "0x...", riskLevel: "high", summary: "4 live approval(s) across 7 of 7 chains. 1 high risk, 2 medium risk, each with a ready-to-sign revoke tx.", counts: { live: 4, high: 1, medium: 2, low: 1, unlimited: 3, nft: 1 },
+    chains: [{ chain: "base", chainId: 8453, status: "ok", candidatesChecked: 71, live: 2, risky: 2, sources: { goplus: "ok", eventLogs: "ok (blockscout, 12 events)", knownPairs: "ok" } }],
+    approvals: [{ chain: "base", chainId: 8453, kind: "erc20", token: { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6 }, spender: { address: "0x...", label: null, known: false, type: "eoa", verified: null, flagged: false },
+      unlimited: true, allowance: "unlimited", tokenBalance: "12.5", riskScore: 11, severity: "high", reasons: ["spender is a plain wallet (EOA), not a contract: a common drainer pattern", "unlimited amount"],
+      revokeTx: { chainId: 8453, to: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", value: "0", data: "0x095ea7b3...", method: "approve(address,uint256)" } }] } });
+
 // Launch feed: newest token launches (GeckoTerminal new pools) with our risk check on each. Query params are optional.
 const PRICE_FEED = process.env.PRICE_FEED || "$0.01", PRICE_FEED_ALL = process.env.PRICE_FEED_ALL || "$0.02";
 const LIMIT = { name: "limit", re: /^([1-9]|1[0-9]|20)$/, pattern: "^([1-9]|1[0-9]|20)$", desc: "rows per chain, 1-20 (default 10)", example: "10" };
@@ -161,7 +174,7 @@ server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it
 });
 const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"], lookupOnlyChains: LOOKUP_ONLY_CHAINS,
   endpoints: ROUTES.map(r => ({ url: `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
-app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL });
+app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL, PRICE_SWEEP });
 
 // Validate before charging: bare paymentless request -> 402 (discovery probes); bad input -> free 400.
 const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
@@ -187,7 +200,7 @@ app.use((req, res, next) => { if (!req.path.startsWith("/v1/")) return next(); c
     return end.call(this, chunk, ...rest); }; next(); });
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
-  try { res.json(await withDeadline(r.fn(req.query[r.param], req.query))); }
+  try { res.json(await withDeadline(r.fn(req.query[r.param], req.query), r.deadline)); }
   catch (e) { res.status(e.status || 404).json({ error: e.status === 400 ? e.message : e.status === 504 ? "upstream timeout, not charged" : "not found or upstream error", detail: String(e.shortMessage || e.message).slice(0, 300) }); }
 });
 
@@ -198,8 +211,8 @@ app.get("/free/launches", async (req, res) => {
   catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
 });
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.9.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches).",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.10.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,
@@ -219,10 +232,10 @@ async function buildMcp() {
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
     extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.9.0" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.10.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
-      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a))); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
+      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a), r.deadline)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
     m.tool("ping", "Free health check.", {}, async () => txt({ ok: true }));
     return m;
   };

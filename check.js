@@ -4,7 +4,7 @@ import { APP_JS, PAY_JS, PAY_VER } from "./check-assets.js";
 import { createHash } from "node:crypto";
 const APP_VER = createHash("sha256").update(APP_JS).digest("hex").slice(0, 8); // cache-bust app.js when only the page logic changes
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005" }) {
+export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005", PRICE_SWEEP = "$0.02" }) {
   const REPO = "https://github.com/povrouyre-wq/automaton-onchain-tools";
   const TITLE = "Check a wallet or token before you trust it | Automaton";
   const DESC = `Pay-per-report crypto safety check. Paste a wallet or token address, pay ${PRICE} in USDC on Base with your own wallet, and get a plain-English risk report. No signup.`;
@@ -41,11 +41,12 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 </style></head><body><div class="w">
 <nav><a class="logo" href="/" style="color:var(--tx)">◆ <b>Automaton</b> Check</a><div><a href="/">For developers</a><a href="${REPO}">Source</a></div></nav>
 <h1>Check a wallet or token<br><span>before you trust it</span></h1>
-<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token, wallet or delegate check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
+<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_SWEEP)} for an all-chain approval sweep, ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token, wallet or delegate check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
 
 <form id="form" class="panel" novalidate>
 <div class="kinds">
 <label><input type="radio" name="kind" value="wallet" checked>Wallet check · ${esc(PRICE)}<small>Balances, risky token approvals and wallet type on Base, Ethereum and BNB Chain in one report.</small></label>
+<label><input type="radio" name="kind" value="sweep">Approval sweep, all chains · ${esc(PRICE_SWEEP)}<small>Every live token and NFT approval on Base, Ethereum, BNB, Arbitrum, Optimism, Polygon and Avalanche, riskiest first, with a one-click revoke for each risky one.</small></label>
 <label><input type="radio" name="kind" value="token">Token check · ${esc(PRICE)}<small>Upgradeability, owner powers, mint/pause/blacklist flags, source verification, owner holdings.</small></label>
 <label><input type="radio" name="kind" value="deep">Token deep scan · ${esc(PRICE_DEEP)}<small>Everything in the token check plus a simulated buy+sell (honeypot and tax test), main pool liquidity, LP burn/lock and top-holder concentration.</small></label>
 <label><input type="radio" name="kind" value="solana">Solana token check · ${esc(PRICE_SOL)}<small>SPL, Token-2022 and pump.fun coins: mint/freeze authority, mutable metadata, risky Token-2022 extensions, holder concentration, bonding-curve or LP burn status.</small></label>

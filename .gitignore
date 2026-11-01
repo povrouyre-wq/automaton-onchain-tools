@@ -7,3 +7,5 @@ keys/
 wallet*.json
 buyer*.json
 .vercel/
+.scratch/
+node_modules
