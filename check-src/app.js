@@ -17,8 +17,8 @@
   function eth() { return window.ethereum || null; }
   function setStatus(html, cls = "") { const s = $("status"); s.className = "status " + cls; s.innerHTML = html; s.hidden = !html; }
   const SOLW = { solwallet: 1, soldelegates: 1 };
-  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet" || k === "sweep" || k === "solana" || !!SOLW[k];
-    $("addrLabel").textContent = k === "solana" ? "Solana token mint address" : SOLW[k] ? "Solana wallet address" : k !== "wallet" && k !== "sweep" ? "Token contract address" : "Wallet address";
+  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet" || k === "sweep" || k === "bundles" || k === "solana" || !!SOLW[k];
+    $("addrLabel").textContent = k === "solana" ? "Solana token mint address" : k === "bundles" ? "BNB Chain token contract address" : SOLW[k] ? "Solana wallet address" : k !== "wallet" && k !== "sweep" ? "Token contract address" : "Wallet address";
     $("addr").placeholder = k === "solana" ? "e.g. DezXAZ8z7Pnrn… or …pump" : SOLW[k] ? "Solana wallet (base58, no 0x)" : k !== "wallet" && k !== "sweep" ? "0x… token contract" : "0x… wallet"; reset(); }
   function reset() { state.pr = null; $("payBox").hidden = true; $("report").hidden = true; setStatus(""); }
 
@@ -30,6 +30,7 @@
       return { url: `/v1/solana/${kind === "solwallet" ? "address" : "delegates"}?address=${a}`, kind, chain: "solana", addr: a }; }
     if (SOL.test(a) && !a.startsWith("0x")) return { err: "That looks like a Solana address. Pick one of the Solana options above." };
     if (!ADDR.test(a)) return { err: "That doesn't look like an address. It should start with 0x followed by 40 hex characters. ENS names aren't supported here." };
+    if (kind === "bundles") return { url: `/v1/bsc/bundles?token=${a}`, kind, chain: "bsc", addr: a };
     if (kind === "sweep") return { url: `/v1/approvals/sweep?address=${a}`, kind, chain: null, addr: a };
     const u = kind === "deep" ? `/v1/token/deep-scan?address=${a}&chain=${chain}` : kind === "token" ? `/v1/token-report?address=${a}&chain=${chain}` : `/v1/wallet-report?address=${a}`;
     return { url: u, kind, chain: kind !== "wallet" ? chain : null, addr: a };
@@ -49,7 +50,7 @@
       if (!acc) return setStatus("No Base USDC payment option offered.", "err");
       state = { ...state, pr, url: b.url, kind: b.kind, chain: b.chain };
       $("qPrice").textContent = fmtUsdc(acc.amount) + " USDC";
-      $("qWhat").textContent = b.kind === "sweep" ? `All-chain approval sweep (live token + NFT approvals on 7 chains, risk-ranked, with one-click revokes) for ${short(b.addr)}` : b.kind === "solwallet" ? `Solana wallet lookup (SOL + token balances, wallet age, recent activity) for ${short(b.addr)}` : b.kind === "soldelegates" ? `Solana token delegate check (live approvals, unlimited and unknown delegates) for ${short(b.addr)}` : b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
+      $("qWhat").textContent = b.kind === "bundles" ? `BNB Chain bundle + sniper check (launch-block buyers, bundles, shared funders, dev link) for ${short(b.addr)}` : b.kind === "sweep" ? `All-chain approval sweep (live token + NFT approvals on 7 chains, risk-ranked, with one-click revokes) for ${short(b.addr)}` : b.kind === "solwallet" ? `Solana wallet lookup (SOL + token balances, wallet age, recent activity) for ${short(b.addr)}` : b.kind === "soldelegates" ? `Solana token delegate check (live approvals, unlimited and unknown delegates) for ${short(b.addr)}` : b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
       $("qPayTo").textContent = acc.payTo; $("qPayTo").href = "https://basescan.org/address/" + acc.payTo;
       $("payBox").hidden = false; setStatus("");
       updateWalletUi();
@@ -213,6 +214,14 @@
     if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
     return h;
   }
+  function bundleHtml(r) {
+    const ex = a => `<a href="https://bscscan.com/address/${esc(a)}" target=_blank rel=noopener>${esc(short(a))}</a>`, c = r.cluster || {};
+    let h = `<h3>Cluster</h3><table><tbody><tr><td>Linked wallets</td><td>${esc(c.wallets)}</td></tr><tr><td>Supply grabbed at launch</td><td>${esc(c.supplyPctAtLaunch)}%</td></tr><tr><td>Supply still held</td><td>${esc(c.supplyPctHeldNow)}%</td></tr><tr><td>Dev in cluster</td><td>${c.devInCluster ? "<b>yes</b>" : "no"}</td></tr><tr><td>Bundle txs</td><td>${esc((c.bundledTxs || []).length)}</td></tr><tr><td>Deployer</td><td>${r.deployer ? ex(r.deployer) : "unknown"}</td></tr><tr><td>Launch block</td><td>${esc(r.launchBlock)} (${esc(r.platform)})</td></tr></tbody></table>`;
+    const list = (r.wallets || []).slice(0, 50);
+    if (list.length) h += `<h3>Early wallets <small class=muted>(first ${list.length} of ${esc(r.walletsTotal)})</small></h3><table><thead><tr><th>Wallet</th><th>Block</th><th>Got</th><th>Holds</th><th>Why</th></tr></thead><tbody>${list.map(w => `<tr><td>${ex(w.address)}${w.isDev ? " (dev)" : ""}${w.inCluster ? " ●" : ""}</td><td>+${esc(w.blockOffset)}</td><td>${esc(w.supplyPct)}%</td><td>${w.holdsPct == null ? "?" : esc(w.holdsPct) + "%"}</td><td class=small>${esc((w.why || []).join("; "))}</td></tr>`).join("")}</tbody></table>`;
+    if (r.coverage) h += `<p class="muted small">Coverage: ${esc(r.coverage.note)}</p>`;
+    return h;
+  }
   function sweepHtml(r) {
     const ex = (c, a, label) => `<a href="${EX7[c] || EX7.base}/address/${esc(a)}" target=_blank rel=noopener>${esc(label || short(a))}</a>`;
     let h = `<h3>Chains</h3><table><thead><tr><th>Chain</th><th>Status</th><th>Live</th><th>Risky</th></tr></thead><tbody>${(r.chains || []).map(c => `<tr><td>${esc(CN7[c.chain] || c.chain)}</td><td>${c.status === "ok" ? "ok" : c.status === "partial" ? '<span style="color:var(--warn)">partial</span>' : '<span class=bad>couldn\'t read</span>'}</td><td>${esc(c.live ?? "-")}</td><td>${c.risky ? `<b class=bad>${esc(c.risky)}</b>` : esc(c.risky ?? "-")}</td></tr>`).join("")}</tbody></table>`;
@@ -240,9 +249,9 @@
   function render(r, tx) {
     const lvl = String(r.riskLevel || "n/a").toLowerCase();
     $("report").innerHTML = `<div class=rhead>${r.type === "solana-address" ? "" : `<span class="risk ${esc(lvl)}">Risk: ${esc(lvl)}</span>`}
-      <span class=muted>${r.type === "approval-sweep" ? "Approval sweep · 7 chains" : r.type === "solana-address" ? "Solana wallet lookup" : r.type === "solana-delegates" ? "Solana delegate check" : r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address || r.owner))}</span></div>
+      <span class=muted>${r.type === "bsc-bundle-check" ? "Bundle + sniper check · BNB Chain" : r.type === "approval-sweep" ? "Approval sweep · 7 chains" : r.type === "solana-address" ? "Solana wallet lookup" : r.type === "solana-delegates" ? "Solana delegate check" : r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address || r.owner))}</span></div>
       <p class=summary>${esc(r.summary)}</p><h3>Findings</h3>${findingsHtml(r.findings)}
-      ${r.type === "approval-sweep" ? sweepHtml(r) : r.type === "solana-address" ? solAddrHtml(r) : r.type === "solana-delegates" ? solDelHtml(r) : r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
+      ${r.type === "bsc-bundle-check" ? bundleHtml(r) : r.type === "approval-sweep" ? sweepHtml(r) : r.type === "solana-address" ? solAddrHtml(r) : r.type === "solana-delegates" ? solDelHtml(r) : r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
       <p class="muted small">${esc(r.disclaimer || "")}</p>
       ${tx ? `<p class="muted small">Paid: <a href="https://basescan.org/tx/${esc(tx)}" target=_blank rel=noopener>view payment on Basescan</a></p>` : ""}
       <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
