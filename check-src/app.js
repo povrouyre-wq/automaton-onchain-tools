@@ -270,7 +270,7 @@
   $("addr").addEventListener("input", reset); $("chain").addEventListener("change", reset);
   $("form").addEventListener("submit", getQuote); $("connectBtn").addEventListener("click", connect); $("payBtn").addEventListener("click", pay);
   const q = new URLSearchParams(location.search);
-  if (["sweep", "token", "deep", "solana", "solwallet", "soldelegates"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
+  if (["sweep", "bundles", "token", "deep", "solana", "solwallet", "soldelegates"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
   if (q.get("chain") === "solana" && !SOLW[q.get("type")]) document.querySelector("input[value=solana]").checked = true;
   if (q.get("chain") && CN[q.get("chain")]) $("chain").value = q.get("chain");
   syncKind(); if (q.get("address")) $("addr").value = q.get("address");
