@@ -31,6 +31,7 @@
     if (SOL.test(a) && !a.startsWith("0x")) return { err: "That looks like a Solana address. Pick one of the Solana options above." };
     if (!ADDR.test(a)) return { err: "That doesn't look like an address. It should start with 0x followed by 40 hex characters. ENS names aren't supported here." };
     if (kind === "bundles") return { url: `/v1/bsc/bundles?token=${a}`, kind, chain: "bsc", addr: a };
+    if (kind === "honeypot") return { url: `/v1/${chain}/honeypot?token=${a}`, kind, chain, addr: a };
     if (kind === "sweep") return { url: `/v1/approvals/sweep?address=${a}`, kind, chain: null, addr: a };
     const u = kind === "deep" ? `/v1/token/deep-scan?address=${a}&chain=${chain}` : kind === "token" ? `/v1/token-report?address=${a}&chain=${chain}` : `/v1/wallet-report?address=${a}`;
     return { url: u, kind, chain: kind !== "wallet" ? chain : null, addr: a };
@@ -50,7 +51,7 @@
       if (!acc) return setStatus("No Base USDC payment option offered.", "err");
       state = { ...state, pr, url: b.url, kind: b.kind, chain: b.chain };
       $("qPrice").textContent = fmtUsdc(acc.amount) + " USDC";
-      $("qWhat").textContent = b.kind === "bundles" ? `BNB Chain bundle + sniper check (launch-block buyers, bundles, shared funders, dev link) for ${short(b.addr)}` : b.kind === "sweep" ? `All-chain approval sweep (live token + NFT approvals on 7 chains, risk-ranked, with one-click revokes) for ${short(b.addr)}` : b.kind === "solwallet" ? `Solana wallet lookup (SOL + token balances, wallet age, recent activity) for ${short(b.addr)}` : b.kind === "soldelegates" ? `Solana token delegate check (live approvals, unlimited and unknown delegates) for ${short(b.addr)}` : b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
+      $("qWhat").textContent = b.kind === "honeypot" ? `Honeypot check (simulated buy + sell: can you sell it, buy and sell tax) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "bundles" ? `BNB Chain bundle + sniper check (launch-block buyers, bundles, shared funders, dev link) for ${short(b.addr)}` : b.kind === "sweep" ? `All-chain approval sweep (live token + NFT approvals on 7 chains, risk-ranked, with one-click revokes) for ${short(b.addr)}` : b.kind === "solwallet" ? `Solana wallet lookup (SOL + token balances, wallet age, recent activity) for ${short(b.addr)}` : b.kind === "soldelegates" ? `Solana token delegate check (live approvals, unlimited and unknown delegates) for ${short(b.addr)}` : b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
       $("qPayTo").textContent = acc.payTo; $("qPayTo").href = "https://basescan.org/address/" + acc.payTo;
       $("payBox").hidden = false; setStatus("");
       updateWalletUi();
@@ -214,6 +215,12 @@
     if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
     return h;
   }
+  function honeypotHtml(r) {
+    const ex = EXPLORER[r.chain] || EXPLORER.base, p = r.pool || {}, s = r.simulation || {};
+    let h = `<h3>Result</h3><table><tbody><tr><td>Can you sell it?</td><td><b>${r.sellable ? "yes" : "NO"}</b></td></tr><tr><td>Buy tax</td><td>${r.buyTaxPct == null ? "?" : esc(r.buyTaxPct) + "%"}</td></tr><tr><td>Sell tax</td><td>${r.sellTaxPct == null ? "?" : esc(r.sellTaxPct) + "%"}</td></tr><tr><td>Verdict</td><td>${esc(r.verdict)}</td></tr><tr><td>Pool used</td><td><a href="${ex}/address/${esc(p.address)}" target=_blank rel=noopener>${esc(short(p.address))}</a> · ${esc(p.dex)} (${esc(p.pairedWith)})</td></tr><tr><td>Test trade</td><td>${esc(s.tradeSize)}</td></tr>${s.revertReason ? `<tr><td>Revert reason</td><td>${esc(s.revertReason)}</td></tr>` : ""}</tbody></table>`;
+    if (r.coverage?.notes?.length) h += `<ul>${r.coverage.notes.map(x => `<li class="muted small">${esc(x)}</li>`).join("")}</ul>`;
+    return h;
+  }
   function bundleHtml(r) {
     const ex = a => `<a href="https://bscscan.com/address/${esc(a)}" target=_blank rel=noopener>${esc(short(a))}</a>`, c = r.cluster || {};
     let h = `<h3>Cluster</h3><table><tbody><tr><td>Linked wallets</td><td>${esc(c.wallets)}</td></tr><tr><td>Supply grabbed at launch</td><td>${esc(c.supplyPctAtLaunch)}%</td></tr><tr><td>Supply still held</td><td>${esc(c.supplyPctHeldNow)}%</td></tr><tr><td>Dev in cluster</td><td>${c.devInCluster ? "<b>yes</b>" : "no"}</td></tr><tr><td>Bundle txs</td><td>${esc((c.bundledTxs || []).length)}</td></tr><tr><td>Deployer</td><td>${r.deployer ? ex(r.deployer) : "unknown"}</td></tr><tr><td>Launch block</td><td>${esc(r.launchBlock)} (${esc(r.platform)})</td></tr></tbody></table>`;
@@ -249,9 +256,9 @@
   function render(r, tx) {
     const lvl = String(r.riskLevel || "n/a").toLowerCase();
     $("report").innerHTML = `<div class=rhead>${r.type === "solana-address" ? "" : `<span class="risk ${esc(lvl)}">Risk: ${esc(lvl)}</span>`}
-      <span class=muted>${r.type === "bsc-bundle-check" ? "Bundle + sniper check · BNB Chain" : r.type === "approval-sweep" ? "Approval sweep · 7 chains" : r.type === "solana-address" ? "Solana wallet lookup" : r.type === "solana-delegates" ? "Solana delegate check" : r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address || r.owner))}</span></div>
+      <span class=muted>${r.type === "honeypot-check" ? "Honeypot check · " + esc(CN[r.chain] || r.chain) : r.type === "bsc-bundle-check" ? "Bundle + sniper check · BNB Chain" : r.type === "approval-sweep" ? "Approval sweep · 7 chains" : r.type === "solana-address" ? "Solana wallet lookup" : r.type === "solana-delegates" ? "Solana delegate check" : r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address || r.owner))}</span></div>
       <p class=summary>${esc(r.summary)}</p><h3>Findings</h3>${findingsHtml(r.findings)}
-      ${r.type === "bsc-bundle-check" ? bundleHtml(r) : r.type === "approval-sweep" ? sweepHtml(r) : r.type === "solana-address" ? solAddrHtml(r) : r.type === "solana-delegates" ? solDelHtml(r) : r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
+      ${r.type === "honeypot-check" ? honeypotHtml(r) : r.type === "bsc-bundle-check" ? bundleHtml(r) : r.type === "approval-sweep" ? sweepHtml(r) : r.type === "solana-address" ? solAddrHtml(r) : r.type === "solana-delegates" ? solDelHtml(r) : r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
       <p class="muted small">${esc(r.disclaimer || "")}</p>
       ${tx ? `<p class="muted small">Paid: <a href="https://basescan.org/tx/${esc(tx)}" target=_blank rel=noopener>view payment on Basescan</a></p>` : ""}
       <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
@@ -270,7 +277,7 @@
   $("addr").addEventListener("input", reset); $("chain").addEventListener("change", reset);
   $("form").addEventListener("submit", getQuote); $("connectBtn").addEventListener("click", connect); $("payBtn").addEventListener("click", pay);
   const q = new URLSearchParams(location.search);
-  if (["sweep", "bundles", "token", "deep", "solana", "solwallet", "soldelegates"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
+  if (["sweep", "honeypot", "bundles", "token", "deep", "solana", "solwallet", "soldelegates"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
   if (q.get("chain") === "solana" && !SOLW[q.get("type")]) document.querySelector("input[value=solana]").checked = true;
   if (q.get("chain") && CN[q.get("chain")]) $("chain").value = q.get("chain");
   syncKind(); if (q.get("address")) $("addr").value = q.get("address");
