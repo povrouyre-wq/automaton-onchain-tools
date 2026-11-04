@@ -9,7 +9,10 @@ import { domainToASCII, domainToUnicode } from "node:url";
 export const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 4000);
 export function rpcFor(chain, env, ...urls) { const list = [...new Set([...(env ? env.split(",").map(x => x.trim()).filter(Boolean) : []), ...urls])];
   const t = list.map(u => http(u, { timeout: RPC_TIMEOUT_MS, retryCount: list.length > 1 ? 0 : 2, retryDelay: 150 }));
-  return createPublicClient({ chain, transport: t.length > 1 ? fallback(t, { retryCount: 0 }) : t[0] }); }
+  const c = createPublicClient({ chain, transport: t.length > 1 ? fallback(t, { retryCount: 0 }) : t[0] });
+  // Some public RPCs prune old receipts/txs and answer null (not an error), so fallback() never moves on. byEach() asks each RPC in turn.
+  c.byEach = async (fn) => { let err; for (const u of list) { try { return await fn(createPublicClient({ chain, transport: http(u, { timeout: RPC_TIMEOUT_MS, retryCount: 1 }) })); } catch (e) { err = e; } } throw err; };
+  return c; }
 const P2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3", ZX = "0xDef1C0ded9bec7F1a1670819833240f027b25EfF", INCH = "0x111111125421cA6dc452d289314280a0f8842A65", LIFI = "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE";
 export const CHAINS = {
   base: { name: "Base", chainId: 8453, native: "ETH", rpc: rpcFor(base, process.env.BASE_RPC, "https://mainnet.base.org", "https://base-rpc.publicnode.com"),
@@ -57,7 +60,7 @@ async function tokenMeta(C, addr) {
 
 export async function explain(chain, hash) {
   const C = CHAINS[chain];
-  const [tx, rc] = await Promise.all([C.rpc.getTransaction({ hash }), C.rpc.getTransactionReceipt({ hash })]);
+  let tx, rc; try { [tx, rc] = await Promise.all([C.rpc.getTransaction({ hash }), C.rpc.getTransactionReceipt({ hash })]); } catch (e) { if (!C.rpc.byEach) throw e; [tx, rc] = await C.rpc.byEach(c => Promise.all([c.getTransaction({ hash }), c.getTransactionReceipt({ hash })])); }
   const selector = tx.input.slice(0, 10); let method = null, args = null, candidates = [];
   if (tx.input && tx.input !== "0x") { candidates = await lookupSig(selector);
     for (const sig of candidates) { try { const d = decodeFunctionData({ abi: [parseAbiItem("function " + sig)], data: tx.input }); method = sig; args = d.args; break; } catch {} } }

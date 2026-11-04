@@ -129,7 +129,7 @@ ROUTES.push({ key: "approval_sweep_all_chains", path: "/v1/approvals/sweep", par
 // BNB Chain bundle + sniper check ($0.01): launch-block buyers, bundled txs, dev hand-outs and shared funders, % of supply grabbed and still held.
 const PRICE_BUNDLE = process.env.PRICE_BUNDLE || "$0.01";
 ROUTES.push({ key: "bsc_bundle_sniper_check", path: "/v1/bsc/bundles", param: "token", re: ADDR, pattern: AP, price: PRICE_BUNDLE, deadline: 40000, fn: v => bscBundles(v),
-  name: "BNB Chain Bundle + Sniper Check (four.meme / PancakeSwap)", pdesc: "BNB Chain token contract address", example: "0x16019ac8ebf79139c80fd1113b38d567daf27777", tag: "bundles", chainLabel: "BNB Chain",
+  name: "BNB Chain Bundle + Sniper Check (four.meme / PancakeSwap)", pdesc: "BNB Chain token contract address, launched within roughly the last 2 days (older launches are past free-RPC log history; such calls are not charged)", example: "0x284a907411bb2eacf580f3ec4d4585925d51ffff", tag: "bundles", chainLabel: "BNB Chain",
   tags: ["bundle", "sniper", "four.meme", "pancakeswap", "bsc", "bnb", "memecoin", "launch", "rug", "security", "crypto"],
   desc: "For a four.meme or PancakeSwap launch: finds the launch block, reads the next 10 blocks and clusters the wallets that bought in the launch block, were bundled in one tx, got tokens from the dev, or were BNB-funded by the dev or a shared wallet just before launch. Returns % of supply the cluster grabbed, % it still holds, whether the dev is in it, a risk verdict and a coverage field. Failed or timed-out calls are not charged.",
   out: { type: "bsc-bundle-check", token: "0x...", symbol: "CAPY", platform: "four.meme", deployer: "0x...", launchBlock: 131292657, riskLevel: "high",
@@ -236,6 +236,12 @@ app.use((req, res, next) => { if (!req.path.startsWith("/v1/")) return next(); c
   res.end = function (chunk, ...rest) { try { if (res.statusCode === 402 && !res.headersSent && (!chunk || String(chunk) === "{}")) { const h = res.getHeader("payment-required");
     if (h) { chunk = Buffer.from(String(h), "base64").toString("utf8"); res.setHeader("content-type", "application/json; charset=utf-8"); res.setHeader("content-length", Buffer.byteLength(chunk)); } } } catch {}
     return end.call(this, chunk, ...rest); }; next(); });
+// The bundle check only reaches ~2 days of BNB log history, so any fixed sample token ages out. Keep the advertised sample fresh:
+// every 6 h (non-blocking) swap in a recent four.meme launch (new token, not just a new pool) from our own feed that is at least 3 min old (launch block + 10 blocks long done).
+let bxAt = 0; const bxQ = () => routeCfg["GET /v1/bsc/bundles"]?.extensions?.bazaar?.info?.input?.queryParams;
+app.use((req, res, next) => { if (Date.now() - bxAt > 6 * 3600e3 && bxQ()) { bxAt = Date.now();
+  launches({ chain: "bsc", limit: 20 }).then(f => { const l = (f.launches || []).find(x => x.chain === "bsc" && /four/.test(x.pool?.dex || "") && (x.pool?.ageMinutes ?? 0) >= 3 && /^0x[0-9a-fA-F]{40}$/.test(x.token?.address || ""));
+    if (l) bxQ().token = l.token.address; }).catch(() => { bxAt = Date.now() - 5.5 * 3600e3; }); } next(); });
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
   try { res.json(await withDeadline(r.fn(req.query[r.param], req.query), r.deadline)); }
@@ -249,7 +255,7 @@ app.get("/free/launches", async (req, res) => {
   catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
 });
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.13.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+  info: { title: "Automaton Onchain & URL Tools", version: "1.13.1", contact: { name: "Automaton", url: ORIGIN + "/health" },
     description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
@@ -270,7 +276,7 @@ async function buildMcp() {
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
     extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.13.0" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.13.1" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
       m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a), r.deadline)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }

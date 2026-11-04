@@ -66,14 +66,19 @@ export async function bscBundles(tokenIn) {
   let logs = [], scanFrom, scanTo, firstSeen = null;
   const times = (gp || []).map(p => Date.parse(p.createdAt)).filter(Number.isFinite);
   let anchor = times.length ? await blockAt(Math.floor(Math.min(...times) / 1000), head) : head;
-  for (let step = 0, to = Math.min(head, anchor + 2000); step < 8 && Date.now() - started < 14000; step++) {
-    const from = Math.max(1, to - MAX_LOG_RANGE + 1);
-    let l; try { l = await getLogs(token, from, to); } catch (e) { notes.push(`log query ${from}-${to} failed: ${e.message.slice(0, 90)}`); break; }
+  // Busy tokens overflow the RPC's 20k-results cap on a 50k-block window; shrink the window and retry instead of giving up.
+  let span = MAX_LOG_RANGE, logErr = null;
+  for (let step = 0, to = Math.min(head, anchor + 2000); step < 24 && Date.now() - started < 16000; step++) {
+    const from = Math.max(1, to - span + 1);
+    let l; try { l = await getLogs(token, from, to); logErr = null; } catch (e) {
+      if (/max results|too many|exceed|limit/i.test(e.message) && span > 200) { span = Math.max(200, Math.floor(span / 5)); continue; }
+      logErr = e; notes.push(`log query ${from}-${to} failed: ${e.message.slice(0, 90)}`); break; }
     scanFrom = from; scanTo ??= to;
     if (l.length) { logs = l.concat(logs); firstSeen = Number(BigInt(l[0].blockNumber)); if (l.some(x => lc(addr(x.topics[1])) === ZERO)) break; }
     else if (logs.length) break; // nothing earlier: creation was in the window we already have
     to = from - 1;
   }
+  if (!logs.length && logErr) throw Object.assign(new Error(`BNB Chain log query failed, not charged: ${logErr.message.slice(0, 120)}`), { status: 502 });
   if (!logs.length) throw Object.assign(new Error("no Transfer events found in the searchable range (token too old for free non-archive RPC log access, or never traded)"), { status: 404 });
   logs.sort((a, b) => Number(BigInt(a.blockNumber) - BigInt(b.blockNumber)) || Number(BigInt(a.logIndex) - BigInt(b.logIndex)));
   const ev = logs.map(l => ({ block: Number(BigInt(l.blockNumber)), tx: l.transactionHash, from: lc(addr(l.topics[1])), to: lc(addr(l.topics[2] || "0x" + "0".repeat(64))), value: BigInt(l.data === "0x" ? 0 : l.data) }));
