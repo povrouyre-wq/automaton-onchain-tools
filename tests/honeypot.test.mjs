@@ -21,7 +21,7 @@ for (const c of ["base", "ethereum", "bsc"]) test(`402 for /v1/${c}/honeypot: $0
   const req = JSON.parse(Buffer.from(r.headers.get("payment-required"), "base64").toString()); const a = req.accepts[0];
   assert.equal(a.amount, "10000"); assert.equal(a.network, "eip155:8453"); assert.ok(req.extensions?.bazaar?.info?.input); assert.ok(req.resource.description.length <= 500);
   assert.equal((await fetch(`${BASE}/v1/${c}/honeypot?token=0x123`)).status, 400);
-  const o = await (await fetch(BASE + "/openapi.json")).json(); assert.ok(o.paths[`/v1/${c}/honeypot`]); assert.equal(o.info.version, "1.13.1");
+  const o = await (await fetch(BASE + "/openapi.json")).json(); assert.ok(o.paths[`/v1/${c}/honeypot`]); assert.equal(o.info.version, "1.14.0");
 });
 const LIVE = { base: "0x532f27101965dd16442E59d40670FaF5eBB142E4", ethereum: "0x6982508145454Ce325dDbE47a25d4ec3d2311933", bsc: "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82" };
 for (const [c, t] of Object.entries(LIVE)) test(`live ${c}: blue-chip meme is sellable with ~0 tax`, { timeout: 40000 }, async () => {
