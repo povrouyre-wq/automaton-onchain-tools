@@ -143,7 +143,7 @@ export async function holders(chain, token, supply, decimals, known) {
   } catch (e) { return viaLogs(`Blockscout holder list unavailable (${String(e.message).slice(0, 60)}).`); }
 }
 
-async function lpStatus(chain, pool, token, owner) {
+export async function lpStatus(chain, pool, token, owner) {
   const C = CHAINS[chain];
   if (pool.kind === "v3") return { type: "concentrated liquidity (V3 position NFTs)", determinable: false, note: "V3 liquidity is held as position NFTs, so lock/burn status can't be read from the pool; not determinable from free data." };
   const [sup, dead, zero, self] = await mc(C, [{ address: pool.address, abi: A, functionName: "totalSupply" }, { address: pool.address, abi: A, functionName: "balanceOf", args: [DEAD] }, { address: pool.address, abi: A, functionName: "balanceOf", args: [ZERO] }, { address: pool.address, abi: A, functionName: "balanceOf", args: [token] }]);

@@ -20,6 +20,7 @@ import { launches, launchesDelayed } from "./launches.js";
 import { approvalSweep } from "./sweep.js";
 import { bscBundles } from "./bundles.js";
 import { honeypotCheck, HONEYPOT_CHAINS } from "./honeypot.js";
+import { tokenVerdict } from "./verdict.js";
 import { CHAINS, CORE_CHAINS, LOOKUP_ONLY_CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -151,6 +152,22 @@ for (const c of HONEYPOT_CHAINS) { const N = CHAINS[c].name, [ex, sym, dex, wn] 
       summary: `${sym} on ${N}: sellable. A simulated buy and sell on ${dex} both worked: buy tax 0%, sell tax 0%.`, pool: { address: "0x...", dex, pairedWith: wn },
       simulation: { tradeSize: `0.05 ${wn}`, roundTripReturnPct: 98.5 }, coverage: { poolsTried: [{ pool: "0x...", dex, result: "sell ok" }], notes: ["..."] } } }); }
 
+// Quick token verdict ($0.02 per chain): SAFE / CAUTION / AVOID from the honeypot sim, contract-risk flags, LP burn/lock and holders.
+// Inconclusive sims throw 422 (not charged), same as the honeypot route. Bad input is a free 400.
+const PRICE_VERDICT = process.env.PRICE_VERDICT || "$0.02";
+for (const c of HONEYPOT_CHAINS) { const N = CHAINS[c].name, [ex, sym] = HP_EX[c];
+  ROUTES.push({ key: `${c}_token_verdict`, path: `/v1/${c}/verdict`, param: "token", re: ADDR, pattern: AP, price: PRICE_VERDICT, deadline: 45000, fn: v => tokenVerdict(c, v),
+    name: `${N} Quick Token Verdict (SAFE / CAUTION / AVOID)`, pdesc: `${N} token contract address`, example: ex, tag: "verdict", chainLabel: N,
+    tags: ["verdict", "honeypot", "tax", "holders", "lp", "rug", c === "bsc" ? "bnb" : c, "memecoin", "security", "crypto"],
+    cardDesc: "One call: SAFE, CAUTION or AVOID for a token on Base, Ethereum or BNB Chain, plus sellable, buy/sell tax, owner renounced, proxy, mint/pause/blacklist/fee, LP burned or locked, top 10 holders excluding pools and burn, and a copycat-name flag. Same honeypot sim, contract-risk scan and holder/LP reads. No pool, not a token, or an inconclusive simulation is not charged.",
+    desc: `SAFE, CAUTION or AVOID for this ${N} token, plus sellable, buy/sell tax, owner renounced, proxy, mint/pause/blacklist/fee, LP burned or locked %, top 10 holders excluding pools and burn, and a copycat-of-a-major-token flag. Same honeypot sim, contract-risk scan and holder/LP reads. No pool, not a token, or an inconclusive sim is not charged.`,
+    out: { type: "token-verdict", chain: c, token: { address: ex, symbol: sym, name: sym, decimals: 18 }, verdict: "CAUTION", riskLevel: "medium",
+      summary: `${sym} on ${N}: CAUTION because LP burn/lock share could not be determined.`,
+      flags: { sellable: true, buyTaxPct: 0, sellTaxPct: 0, ownerRenounced: true, isProxy: false, canMint: false, canPause: false, canBlacklist: false, canChangeFees: false, lpBurnedOrLockedPct: null, top10HolderPct: 12.4, copycatName: false },
+      findings: [{ severity: "medium", note: "LP burn/lock share could not be determined." }, { severity: "info", note: "Simulated buy and sell both worked (buy 0%, sell 0%)." }],
+      couldNotDetermine: ["LP lock: V3 liquidity is held as position NFTs, so burn/lock cannot be read from the pool."],
+      disclaimer: "Automated verdict from public onchain data. SAFE is not an audit. Not financial or security advice." } }); }
+
 // Launch feed: newest token launches (GeckoTerminal new pools) with our risk check on each. Query params are optional.
 const PRICE_FEED = process.env.PRICE_FEED || "$0.01", PRICE_FEED_ALL = process.env.PRICE_FEED_ALL || "$0.02";
 const LIMIT = { name: "limit", re: /^([1-9]|1[0-9]|20)$/, pattern: "^([1-9]|1[0-9]|20)$", desc: "rows per chain, 1-20 (default 10)", example: "10" };
@@ -175,9 +192,10 @@ ROUTES.push(
     desc: `Newest token launches on Solana (mostly pump.fun curves, plus PumpSwap/Meteora), up to 20, each with our Solana token check at request time: mint/freeze authority, mutable metadata, Token-2022 extensions, holder concentration excluding curve/pools, curve progress, and a flag for copycats of major tokens (USDC, SOL, USDT...) that aren't the real mint. Plus age, FDV, 1h buys/sells. Data: GeckoTerminal. Heuristics, not an audit.`, out: { ...feedOut, launches: [{ chain: "solana", token: { address: "...pump", symbol: "..." }, pool: { dex: "pump-fun", ageMinutes: 1, fdvUsd: 2866 }, risk: { riskLevel: "low", mintAuthorityActive: false, freezeAuthorityActive: false, metadataMutable: false, pumpfun: { status: "on-curve", progressPct: 2.8 }, top10HoldersPct: 2.2, flags: [] } }] } });
 
 // "Use when" lead line: agents pick tools by reading descriptions, so each one opens with the exact question it answers.
-const UW = (r) => { const N = r.chainLabel || (r.key.split("_")[0] in CHAINS ? CHAINS[r.key.split("_")[0]].name : ""); const k = r.key.replace(/^[a-z]+_(?=(tx_explain|token_approvals|address_inspect|contract_risk|honeypot_check)$)/, "");
+const UW = (r) => { const N = r.chainLabel || (r.key.split("_")[0] in CHAINS ? CHAINS[r.key.split("_")[0]].name : ""); const k = r.key.replace(/^[a-z]+_(?=(tx_explain|token_approvals|address_inspect|contract_risk|honeypot_check|token_verdict)$)/, "");
   return ({ tx_explain: `what did this ${N} transaction do?`, token_approvals: `which token approvals on this ${N} wallet should I revoke?`, address_inspect: `what is this ${N} address (wallet, contract, proxy, token)?`,
     contract_risk: `is this ${N} contract risky (owner, proxy, mint, pause, blacklist)?`, honeypot_check: `can I sell this ${N} token, and what is the buy/sell tax?`,
+    token_verdict: `should I buy this ${N} token (quick SAFE / CAUTION / AVOID)?`,
     url_safety_check: "is this link a phishing or scam site?", gas_snapshot: "how much gas will a transfer or swap cost right now?", ens_resolve: "what address is behind this ENS name or Basename (or vice versa)?",
     calldata_decode: "what am I about to sign with this calldata?", wallet_portfolio: "what tokens does this wallet hold on Base, Ethereum and BNB?", wallet_report: "is this wallet safe (approvals, delegation, balances) in one report?",
     token_report: "should I trust this token contract (owner, supply, flags)?", token_deep_scan: "is this token a honeypot or rug (sell sim, liquidity, LP lock, holders)?",
@@ -212,7 +230,7 @@ server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it
 });
 const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"], lookupOnlyChains: LOOKUP_ONLY_CHAINS,
   endpoints: ROUTES.map(r => ({ url: `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
-app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL, PRICE_SWEEP, PRICE_BUNDLE, PRICE_HONEYPOT });
+app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL, PRICE_SWEEP, PRICE_BUNDLE, PRICE_HONEYPOT, PRICE_VERDICT });
 
 // Validate before charging: bare paymentless request -> 402 (discovery probes); bad input -> free 400.
 const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
@@ -255,8 +273,8 @@ app.get("/free/launches", async (req, res) => {
   catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
 });
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.13.1", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs).",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.14.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.02 quick token verdict for those three chains (SAFE / CAUTION / AVOID, bundling sellability, tax, owner powers, LP burn/lock and holder concentration), a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,
@@ -276,7 +294,7 @@ async function buildMcp() {
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
     extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: { type: "string", pattern: r.pattern, ...(r.maxLen ? { maxLength: r.maxLen } : {}), description: r.pdesc }, ...(r.extra ? { [r.extra.name]: { type: "string", pattern: r.extra.pattern, description: r.extra.desc } } : {}) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...(r.extra ? { [r.extra.name]: r.extra.example } : {}) } }) } });
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.13.1" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.14.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
       m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...(r.extra ? { [r.extra.name]: z.string().regex(r.extra.re).optional() } : {}) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a), r.deadline)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
