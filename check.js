@@ -4,7 +4,7 @@ import { APP_JS, PAY_JS, PAY_VER } from "./check-assets.js";
 import { createHash } from "node:crypto";
 const APP_VER = createHash("sha256").update(APP_JS).digest("hex").slice(0, 8); // cache-bust app.js when only the page logic changes
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005", PRICE_SWEEP = "$0.02", PRICE_BUNDLE = "$0.01", PRICE_HONEYPOT = "$0.01" }) {
+export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005", PRICE_SWEEP = "$0.02", PRICE_BUNDLE = "$0.01", PRICE_HONEYPOT = "$0.01", PRICE_VERDICT = "$0.02" }) {
   const REPO = "https://github.com/povrouyre-wq/automaton-onchain-tools";
   const TITLE = "Check a wallet or token before you trust it | Automaton";
   const DESC = `Pay-per-report crypto safety check. Paste a wallet or token address, pay ${PRICE} in USDC on Base with your own wallet, and get a plain-English risk report. No signup.`;
@@ -32,7 +32,7 @@ input[type=text],select{width:100%;background:#0f1218;color:var(--tx);border:1px
 .addr{word-break:break-all;font:13px ui-monospace,Menlo,monospace}
 table{width:100%;border-collapse:collapse;font-size:14px;margin:0 0 8px}td,th{border-bottom:1px solid var(--ln);padding:8px 6px;text-align:left;vertical-align:top}th{color:var(--mu);font-weight:500}
 .rhead{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.risk{font-weight:700;border-radius:8px;padding:4px 10px;text-transform:capitalize}
-.risk.low{background:rgba(46,204,143,.15);color:var(--ok)}.risk.medium{background:rgba(240,180,41,.15);color:var(--warn)}.risk.high{background:rgba(255,93,93,.15);color:var(--bad)}.risk.n\\/a{background:#1b2030}
+.risk.low{background:rgba(46,204,143,.15);color:var(--ok)}.risk.medium{background:rgba(240,180,41,.15);color:var(--warn)}.risk.high,.risk.critical{background:rgba(255,93,93,.15);color:var(--bad)}.risk.n\\/a{background:#1b2030}
 .summary{font-size:17px}.summary,.finds,td,#qWhat{overflow-wrap:anywhere}.finds{padding-left:0;list-style:none}.finds li{margin:0 0 8px}.sev{display:inline-block;font-size:12px;border-radius:6px;padding:1px 7px;margin-right:6px;text-transform:uppercase;background:#1b2030;color:var(--mu)}
 .sev.high{color:var(--bad)}.sev.medium{color:var(--warn)}.sev.low{color:var(--ok)}.bad{color:var(--bad)}h3{font-size:16px;margin:20px 0 8px}
 pre{background:#0f1218;border:1px solid var(--ln);border-radius:10px;padding:12px;overflow:auto;font-size:12px;max-height:420px}
@@ -41,13 +41,14 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 </style></head><body><div class="w">
 <nav><a class="logo" href="/" style="color:var(--tx)">◆ <b>Automaton</b> Check</a><div><a href="/">For developers</a><a href="${REPO}">Source</a></div></nav>
 <h1>Check a wallet or token<br><span>before you trust it</span></h1>
-<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_HONEYPOT)} for a honeypot/tax check, ${esc(PRICE_BUNDLE)} for a BNB Chain bundle/sniper check, ${esc(PRICE_SWEEP)} for an all-chain approval sweep, ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token, wallet or delegate check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
+<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_VERDICT)} for a quick SAFE / CAUTION / AVOID verdict, ${esc(PRICE_HONEYPOT)} for a honeypot/tax check, ${esc(PRICE_BUNDLE)} for a BNB Chain bundle/sniper check, ${esc(PRICE_SWEEP)} for an all-chain approval sweep, ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token, wallet or delegate check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
 
 <form id="form" class="panel" novalidate>
 <div class="kinds">
 <label><input type="radio" name="kind" value="wallet" checked>Wallet check · ${esc(PRICE)}<small>Balances, risky token approvals and wallet type on Base, Ethereum and BNB Chain in one report.</small></label>
 <label><input type="radio" name="kind" value="sweep">Approval sweep, all chains · ${esc(PRICE_SWEEP)}<small>Every live token and NFT approval on Base, Ethereum, BNB, Arbitrum, Optimism, Polygon and Avalanche, riskiest first, with a one-click revoke for each risky one.</small></label>
 <label><input type="radio" name="kind" value="honeypot">Honeypot check · ${esc(PRICE_HONEYPOT)}<small>Can you actually sell it? A simulated buy and sell (nothing trades) on Base, Ethereum or BNB Chain: sellable yes/no, buy tax and sell tax.</small></label>
+<label><input type="radio" name="kind" value="verdict">Quick verdict · ${esc(PRICE_VERDICT)}<small>SAFE, CAUTION or AVOID in one call: sellable, buy and sell tax, owner powers, LP burn/lock and top-holder concentration on Base, Ethereum or BNB Chain.</small></label>
 <label><input type="radio" name="kind" value="bundles">BNB Chain bundle + sniper check · ${esc(PRICE_BUNDLE)}<small>four.meme and PancakeSwap launches: wallets that bought in the launch block, were bundled or shared a funder with the dev, % of supply they grabbed and still hold.</small></label>
 <label><input type="radio" name="kind" value="token">Token check · ${esc(PRICE)}<small>Upgradeability, owner powers, mint/pause/blacklist flags, source verification, owner holdings.</small></label>
 <label><input type="radio" name="kind" value="deep">Token deep scan · ${esc(PRICE_DEEP)}<small>Everything in the token check plus a simulated buy+sell (honeypot and tax test), main pool liquidity, LP burn/lock and top-holder concentration.</small></label>
