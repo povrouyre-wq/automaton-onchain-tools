@@ -4,7 +4,7 @@
   const $ = id => document.getElementById(id);
   const ADDR = /^0x[0-9a-fA-F]{40}$/, SOL = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
   const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-  const CN = { base: "Base", ethereum: "Ethereum", bsc: "BNB Chain", solana: "Solana" };
+  const CN = { base: "Base", ethereum: "Ethereum", bsc: "BNB Chain", solana: "Solana", arbitrum: "Arbitrum", optimism: "Optimism", polygon: "Polygon", avalanche: "Avalanche" };
   const EXPLORER = { base: "https://basescan.org", ethereum: "https://etherscan.io", bsc: "https://bscscan.com" };
   const CN7 = { base: "Base", ethereum: "Ethereum", bsc: "BNB Chain", arbitrum: "Arbitrum", optimism: "Optimism", polygon: "Polygon", avalanche: "Avalanche" };
   const EX7 = { ...EXPLORER, arbitrum: "https://arbiscan.io", optimism: "https://optimistic.etherscan.io", polygon: "https://polygonscan.com", avalanche: "https://snowtrace.io" };
@@ -17,9 +17,12 @@
   function eth() { return window.ethereum || null; }
   function setStatus(html, cls = "") { const s = $("status"); s.className = "status " + cls; s.innerHTML = html; s.hidden = !html; }
   const SOLW = { solwallet: 1, soldelegates: 1 };
-  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; $("chainRow").hidden = k === "wallet" || k === "sweep" || k === "bundles" || k === "solana" || !!SOLW[k];
-    $("addrLabel").textContent = k === "solana" ? "Solana token mint address" : k === "bundles" ? "BNB Chain token contract address" : SOLW[k] ? "Solana wallet address" : k !== "wallet" && k !== "sweep" ? "Token contract address" : "Wallet address";
-    $("addr").placeholder = k === "solana" ? "e.g. DezXAZ8z7Pnrn… or …pump" : SOLW[k] ? "Solana wallet (base58, no 0x)" : k !== "wallet" && k !== "sweep" ? "0x… token contract" : "0x… wallet"; reset(); }
+  function sendSol() { return $("sendChain") && $("sendChain").value === "solana"; }
+  function syncKind() { const k = document.querySelector("input[name=kind]:checked").value; const send = k === "safetosend";
+    $("chainRow").hidden = send || k === "wallet" || k === "sweep" || k === "bundles" || k === "solana" || !!SOLW[k];
+    $("sendRow").hidden = !send;
+    $("addrLabel").textContent = send ? "Recipient address (to)" : k === "solana" ? "Solana token mint address" : k === "bundles" ? "BNB Chain token contract address" : SOLW[k] ? "Solana wallet address" : k !== "wallet" && k !== "sweep" ? "Token contract address" : "Wallet address";
+    $("addr").placeholder = send ? (sendSol() ? "Solana recipient (base58, no 0x)" : "0x… recipient") : k === "solana" ? "e.g. DezXAZ8z7Pnrn… or …pump" : SOLW[k] ? "Solana wallet (base58, no 0x)" : k !== "wallet" && k !== "sweep" ? "0x… token contract" : "0x… wallet"; reset(); }
   function reset() { state.pr = null; $("payBox").hidden = true; $("report").hidden = true; setStatus(""); }
 
   function buildUrl() {
@@ -30,6 +33,16 @@
       return { url: `/v1/solana/${kind === "solwallet" ? "address" : "delegates"}?address=${a}`, kind, chain: "solana", addr: a }; }
     if (SOL.test(a) && !a.startsWith("0x")) return { err: "That looks like a Solana address. Pick one of the Solana options above." };
     if (!ADDR.test(a)) return { err: "That doesn't look like an address. It should start with 0x followed by 40 hex characters. ENS names aren't supported here." };
+    if (kind === "safetosend") {
+      const sc = $("sendChain").value, re = sc === "solana" ? SOL : ADDR, from = $("fromAddr").value.trim(), token = $("tokenAddr").value.trim();
+      if (!re.test(a)) return { err: sc === "solana" ? "Recipient should be a Solana address (base58, 32 to 44 characters, no 0x)." : "Recipient should start with 0x followed by 40 hex characters." };
+      if (from && !re.test(from)) return { err: "Sender address doesn't match this chain." };
+      if (token && !re.test(token)) return { err: "Token address doesn't match this chain." };
+      let url = `/v1/${sc}/safe-to-send?to=${encodeURIComponent(a)}`;
+      if (from) url += `&from=${encodeURIComponent(from)}`;
+      if (token) url += `&token=${encodeURIComponent(token)}`;
+      return { url, kind, chain: sc, addr: a };
+    }
     if (kind === "bundles") return { url: `/v1/bsc/bundles?token=${a}`, kind, chain: "bsc", addr: a };
     if (kind === "honeypot") return { url: `/v1/${chain}/honeypot?token=${a}`, kind, chain, addr: a };
     if (kind === "verdict") return { url: `/v1/${chain}/verdict?token=${a}`, kind, chain, addr: a };
@@ -52,7 +65,7 @@
       if (!acc) return setStatus("No Base USDC payment option offered.", "err");
       state = { ...state, pr, url: b.url, kind: b.kind, chain: b.chain };
       $("qPrice").textContent = fmtUsdc(acc.amount) + " USDC";
-      $("qWhat").textContent = b.kind === "verdict" ? `Quick token verdict (SAFE / CAUTION / AVOID, taxes, owner powers, LP, holders) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "honeypot" ? `Honeypot check (simulated buy + sell: can you sell it, buy and sell tax) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "bundles" ? `BNB Chain bundle + sniper check (launch-block buyers, bundles, shared funders, dev link) for ${short(b.addr)}` : b.kind === "sweep" ? `All-chain approval sweep (live token + NFT approvals on 7 chains, risk-ranked, with one-click revokes) for ${short(b.addr)}` : b.kind === "solwallet" ? `Solana wallet lookup (SOL + token balances, wallet age, recent activity) for ${short(b.addr)}` : b.kind === "soldelegates" ? `Solana token delegate check (live approvals, unlimited and unknown delegates) for ${short(b.addr)}` : b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
+      $("qWhat").textContent = b.kind === "safetosend" ? `Safe to send? (poisoning lookalikes, scam flags, contract handling, fresh address) for ${short(b.addr)} on ${CN[b.chain] || b.chain}` : b.kind === "verdict" ? `Quick token verdict (SAFE / CAUTION / AVOID, taxes, owner powers, LP, holders) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "honeypot" ? `Honeypot check (simulated buy + sell: can you sell it, buy and sell tax) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "bundles" ? `BNB Chain bundle + sniper check (launch-block buyers, bundles, shared funders, dev link) for ${short(b.addr)}` : b.kind === "sweep" ? `All-chain approval sweep (live token + NFT approvals on 7 chains, risk-ranked, with one-click revokes) for ${short(b.addr)}` : b.kind === "solwallet" ? `Solana wallet lookup (SOL + token balances, wallet age, recent activity) for ${short(b.addr)}` : b.kind === "soldelegates" ? `Solana token delegate check (live approvals, unlimited and unknown delegates) for ${short(b.addr)}` : b.kind === "solana" ? `Solana token check (authorities, metadata, extensions, holders, pump.fun curve / LP) for ${short(b.addr)}` : b.kind === "deep" ? `Token deep scan (honeypot sell test, liquidity, holders, owner powers) for ${short(b.addr)} on ${CN[b.chain]}` : b.kind === "token" ? `Token due-diligence report for ${short(b.addr)} on ${CN[b.chain]}` : `Wallet security report for ${short(b.addr)} across Base, Ethereum and BNB Chain`;
       $("qPayTo").textContent = acc.payTo; $("qPayTo").href = "https://basescan.org/address/" + acc.payTo;
       $("payBox").hidden = false; setStatus("");
       updateWalletUi();
@@ -267,18 +280,33 @@
       say(`Revoke sent: <a href="${EX7[a.chain] || EX7.base}/tx/${esc(h)}" target=_blank rel=noopener>${esc(short(h))}</a>`, "ok");
     } catch (e) { const m = e.shortMessage || e.message || String(e); say(/reject|denied|cancel/i.test(m) ? "Cancelled. Nothing was sent." : "Revoke failed: " + esc(m), "err"); }
   }
+  function safeHtml(r) {
+    const ex = a => !a ? "" : r.chain === "solana" ? sxl(a) : `<a href="${EX7[r.chain] || EX7.base}/address/${esc(a)}" target=_blank rel=noopener>${esc(short(a))}</a>`;
+    const rows = [["Verdict", `<b>${esc(r.verdict)}</b>`], ["Recipient", ex(r.to)], ["Sender", r.from ? ex(r.from) : "<span class=muted>not provided</span>"], ["Token", r.token ? ex(r.token) : "<span class=muted>not provided</span>"],
+      ["Contract?", r.checks?.contract?.isContract ? "yes (" + esc(r.checks.contract.kind || "contract") + ")" : "no (" + esc(r.checks?.contract?.kind || "eoa") + ")"],
+      ["Token handling", esc(r.checks?.contract?.tokenHandling || "n/a")],
+      ["Poisoning lookalikes", r.checks?.addressPoisoning?.checked ? esc((r.checks.addressPoisoning.lookalikes || []).length) + " (of " + esc(r.checks.addressPoisoning.counterparties) + " counterparties)" : "not compared"],
+      ["Scam flags", esc(r.checks?.scamFlags?.status || "n/a") + (r.checks?.scamFlags?.flagged ? " · flagged" : "")],
+      ["Fresh empty address", r.checks?.freshAddress?.fresh ? "yes" : r.checks?.freshAddress?.partial ? "partial" : "no"]];
+    let h = `<h3>Checks <small class=muted>(each one is a heuristic)</small></h3><table><tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>`;
+    h += `<h3>Reasons</h3>` + ((r.reasons || []).length ? `<ul class=finds>${r.reasons.map(x => `<li><span class="sev ${esc(x.severity)}">${esc(x.severity)}</span> ${esc(x.note)}</li>`).join("")}</ul>` : "<p class=muted>No reasons.</p>");
+    if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
+    return h;
+  }
   function render(r, tx) {
     const lvl = String(r.riskLevel || "n/a").toLowerCase();
-    $("report").innerHTML = `<div class=rhead>${r.type === "solana-address" ? "" : `<span class="risk ${esc(lvl)}">Risk: ${esc(lvl)}</span>`}
-      <span class=muted>${r.type === "token-verdict" ? "Quick verdict · " + esc(CN[r.chain] || r.chain) : r.type === "honeypot-check" ? "Honeypot check · " + esc(CN[r.chain] || r.chain) : r.type === "bsc-bundle-check" ? "Bundle + sniper check · BNB Chain" : r.type === "approval-sweep" ? "Approval sweep · 7 chains" : r.type === "solana-address" ? "Solana wallet lookup" : r.type === "solana-delegates" ? "Solana delegate check" : r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address || r.owner))}</span></div>
-      <p class=summary>${esc(r.summary)}</p><h3>Findings</h3>${findingsHtml(r.findings)}
-      ${r.type === "token-verdict" ? verdictHtml(r) : r.type === "honeypot-check" ? honeypotHtml(r) : r.type === "bsc-bundle-check" ? bundleHtml(r) : r.type === "approval-sweep" ? sweepHtml(r) : r.type === "solana-address" ? solAddrHtml(r) : r.type === "solana-delegates" ? solDelHtml(r) : r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
+    const send = r.type === "safe-to-send";
+    const badge = send ? String(r.verdict || "safe") : lvl;
+    $("report").innerHTML = `<div class=rhead>${r.type === "solana-address" ? "" : `<span class="risk ${esc(badge)}">${send ? esc(badge) : "Risk: " + esc(lvl)}</span>`}
+      <span class=muted>${send ? "Safe to send? · " + esc(CN[r.chain] || r.chain) : r.type === "token-verdict" ? "Quick verdict · " + esc(CN[r.chain] || r.chain) : r.type === "honeypot-check" ? "Honeypot check · " + esc(CN[r.chain] || r.chain) : r.type === "bsc-bundle-check" ? "Bundle + sniper check · BNB Chain" : r.type === "approval-sweep" ? "Approval sweep · 7 chains" : r.type === "solana-address" ? "Solana wallet lookup" : r.type === "solana-delegates" ? "Solana delegate check" : r.type === "solana-token-check" ? "Solana token check" : r.type === "token-deep-scan" ? "Token deep scan · " + esc(CN[r.chain] || r.chain) : r.type === "token-report" ? "Token report · " + esc(CN[r.chain] || r.chain) : "Wallet report · 3 chains"} · ${esc(short(r.address || r.owner || r.to))}</span></div>
+      <p class=summary>${esc(r.summary)}</p>${send ? "" : `<h3>Findings</h3>${findingsHtml(r.findings)}`}
+      ${send ? safeHtml(r) : r.type === "token-verdict" ? verdictHtml(r) : r.type === "honeypot-check" ? honeypotHtml(r) : r.type === "bsc-bundle-check" ? bundleHtml(r) : r.type === "approval-sweep" ? sweepHtml(r) : r.type === "solana-address" ? solAddrHtml(r) : r.type === "solana-delegates" ? solDelHtml(r) : r.type === "solana-token-check" ? solHtml(r) : r.type === "token-deep-scan" ? deepHtml(r) : r.type === "token-report" ? tokenHtml(r) : walletHtml(r)}
       <p class="muted small">${esc(r.disclaimer || "")}</p>
       ${tx ? `<p class="muted small">Paid: <a href="https://basescan.org/tx/${esc(tx)}" target=_blank rel=noopener>view payment on Basescan</a></p>` : ""}
       <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify(r, null, 2))}</pre></details>
       <p><button type=button class=b2 id=dl>Download JSON</button></p>`;
     $("report").hidden = false; $("report").scrollIntoView({ behavior: "smooth", block: "start" });
-    $("dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" })); a.download = `${r.type}-${r.address || r.owner}.json`; a.click(); };
+    $("dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" })); a.download = `${r.type}-${r.address || r.owner || r.to}.json`; a.click(); };
     if (r.type === "approval-sweep") $("report").querySelectorAll("[data-revoke]").forEach(b => b.addEventListener("click", () => revoke(r, Number(b.dataset.revoke))));
   }
 
@@ -289,11 +317,14 @@
   }
   document.querySelectorAll("input[name=kind]").forEach(el => el.addEventListener("change", syncKind));
   $("addr").addEventListener("input", reset); $("chain").addEventListener("change", reset);
+  $("sendChain").addEventListener("change", syncKind); $("fromAddr").addEventListener("input", reset); $("tokenAddr").addEventListener("input", reset);
   $("form").addEventListener("submit", getQuote); $("connectBtn").addEventListener("click", connect); $("payBtn").addEventListener("click", pay);
   const q = new URLSearchParams(location.search);
-  if (["sweep", "honeypot", "verdict", "bundles", "token", "deep", "solana", "solwallet", "soldelegates"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
-  if (q.get("chain") === "solana" && !SOLW[q.get("type")]) document.querySelector("input[value=solana]").checked = true;
-  if (q.get("chain") && CN[q.get("chain")]) $("chain").value = q.get("chain");
+  if (["safetosend", "sweep", "honeypot", "verdict", "bundles", "token", "deep", "solana", "solwallet", "soldelegates"].includes(q.get("type"))) document.querySelector(`input[value=${q.get("type")}]`).checked = true;
+  if (q.get("chain") === "solana" && !SOLW[q.get("type")] && q.get("type") !== "safetosend") document.querySelector("input[value=solana]").checked = true;
+  if (q.get("chain") && CN[q.get("chain")] && ["base", "ethereum", "bsc"].includes(q.get("chain"))) $("chain").value = q.get("chain");
+  if (q.get("chain") && [...$("sendChain").options].some(o => o.value === q.get("chain"))) $("sendChain").value = q.get("chain");
   syncKind(); if (q.get("address")) $("addr").value = q.get("address");
+  if (q.get("from")) $("fromAddr").value = q.get("from"); if (q.get("token")) $("tokenAddr").value = q.get("token");
   mobileLinks(); updateWalletUi();
 })();

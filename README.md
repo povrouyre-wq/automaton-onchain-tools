@@ -6,11 +6,11 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 
 **Live:** https://automaton-tx-explainer.vercel.app · [OpenAPI](https://automaton-tx-explainer.vercel.app/openapi.json) · [llms.txt](https://automaton-tx-explainer.vercel.app/llms.txt) · [x402 discovery](https://automaton-tx-explainer.vercel.app/.well-known/x402)
 
-**Not an agent?** [/check](https://automaton-tx-explainer.vercel.app/check) is a web page where anyone can buy the $0.02 quick token verdict, the $0.25 wallet or token report, or the $1.50 token deep scan, with a browser wallet (MetaMask, Coinbase Wallet, etc.) using the same x402 flow. Page sources are in `check-src/`; `node check-src/build.mjs` (needs `esbuild`) regenerates `check-assets.js`.
+**Not an agent?** [/check](https://automaton-tx-explainer.vercel.app/check) is a web page where anyone can buy the $0.005 safe-to-send check, the $0.02 quick token verdict, the $0.25 wallet or token report, or the $1.50 token deep scan, with a browser wallet (MetaMask, Coinbase Wallet, etc.) using the same x402 flow. Page sources are in `check-src/`; `node check-src/build.mjs` (needs `esbuild`) regenerates `check-assets.js`.
 
 ## Endpoints
 
-`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). With the Solana token check, the Solana address and delegate lookups, the launch feeds and the three quick-verdict routes that gives 51 paid tools.
+`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). Safe to send also accepts `solana`. With the Solana token check, the Solana address and delegate lookups, the launch feeds, the three quick-verdict routes and the eight safe-to-send routes that gives 59 paid tools.
 
 **Arbitrum, Optimism, Polygon and Avalanche** get the four per-chain lookups only (tx, approvals, address, contract-risk), all at **$0.005**, and their address and contract-risk responses carry the copycat-token flag (see below). They are not part of the gas snapshot, portfolio, wallet/token reports, deep scan or launch feeds, which stay on Base, Ethereum and BNB Chain.
 
@@ -33,6 +33,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 | **All-Chain Approval Sweep** | `GET /v1/approvals/sweep?address=0x...` | $0.02 | One call sweeps Base, Ethereum, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche for live ERC-20 allowances and NFT `setApprovalForAll` approvals, ranks them by risk (unlimited amount, unknown spender, unverified or non-contract spender, GoPlus-flagged spender) and returns a ready-to-sign revoke tx (`to`, `data`, `chainId`, value 0) for each risky one. Per-chain status; one chain failing still returns the others |
 | **Honeypot Check (Base, Ethereum, BNB Chain)** | `GET /v1/{base\|ethereum\|bsc}/honeypot?token=0x...` | $0.01 | Can you actually sell it? Simulates a small buy and a sell back into the token's deepest WETH/WBNB pool (Uniswap V2/V3, Aerodrome, SushiSwap V2, PancakeSwap V2/V3) with one `eth_call` + state override, so nothing trades. Returns `sellable`, `buyTaxPct`, `sellTaxPct`, the pool used, a verdict (sellable, taxed, high tax, honeypot) and coverage notes. No pool, not a token or an inconclusive simulation is not charged. |
 | **Quick Token Verdict (Base, Ethereum, BNB Chain)** | `GET /v1/{base\|ethereum\|bsc}/verdict?token=0x...` | $0.02 | SAFE, CAUTION or AVOID in one call, plus the raw flags: sellable, buy/sell tax, owner renounced, proxy, mint/pause/blacklist/fee, LP burned or locked %, top 10 holders excluding pools and burn, and a copycat-of-a-major-token flag. Same simulation and reads as the honeypot check, contract-risk scan and deep-scan holder/LP code. No pool, not a token or an inconclusive simulation is not charged. MCP tools: `base_token_verdict`, `ethereum_token_verdict`, `bsc_token_verdict`. |
+| **Safe to Send? (all 8 chains)** | `GET /v1/{chain}/safe-to-send?to=…&from=…&token=…` | $0.005 | Pre-transfer check of the recipient. Verdict is `safe`, `caution` or `danger`. `to` is required. `from` (optional) turns on the address-poisoning lookalike check against that sender's recent counterparties. `token` (optional) is the token the agent intends to send. Heuristics only: lookalike prefix/suffix, dust-only spam history, free GoPlus scam/drainer flags on EVM, whether a contract looks unable to handle the token, and a fresh empty address (no history, zero native balance). Solana is included; it has no free address-flag source here and the response says so. Bad input is a free 400. |
 | **BNB Chain Bundle + Sniper Check** | `GET /v1/bsc/bundles?token=0x...` | $0.01 | For a four.meme or PancakeSwap launch: finds the launch block, reads the next 10 blocks and clusters launch-block buyers, bundled txs, dev hand-outs and wallets BNB-funded by the dev or a shared wallet in the 40 blocks before launch. Returns % of supply grabbed, % still held, dev-in-cluster, risk verdict and an honest `coverage` field (free public RPC: 50k-block log chunks, recent history only). Failed/timed-out calls are not charged. |
 | **Launch Feed (Base + BNB + Solana)** | `GET /v1/launches?chain=all&limit=10` | $0.02 | Newest token launches on Base, BNB Chain (four.meme, PancakeSwap) and Solana (mostly pump.fun), up to 20 per chain, each run through our risk check at request time: pool DEX, age, liquidity, FDV, 1h buys/sells, plus risk level and flags |
 | **Base Launch Feed** | `GET /v1/base/launches?limit=10` | $0.01 | Base only: verified source, upgradeable proxy, owner type, mint/pause/blacklist/fee selectors on each new token (B20 native tokens are labeled as not checkable by bytecode) |
@@ -71,6 +72,18 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 - **SAFE** only when it is sellable, combined tax is under 3%, LP burn/lock is at least 50% and conclusive, and none of the triggers above fired. Missing holder data is listed and does not invent a percentage. Leftover notes (renounced admin selectors, unverified Sourcify source, a non-renounced owner with no dangerous selector) stay in `findings`.
 
 The sell test is the honeypot checker. Owner powers are `contractRisk`. Holders and LP burn/lock are the deep-scan helpers, on the same public RPCs. No pool, not a token, or an inconclusive simulation is a 422 and is not charged. Bad input is a free 400.
+
+### How the safe-to-send check works
+
+`GET /v1/{chain}/safe-to-send?to=…` is $0.005 on `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon`, `avalanche` and `solana`. It answers `safe`, `caution` or `danger` before a transfer. Optional `from` is the sender. Optional `token` is the token contract or mint being sent. Every reason has `heuristic: true`.
+
+- **Address poisoning:** when `from` is set, recent counterparties come from the same Blockscout and Routescan hosts the approval sweep uses (tx list and token transfers, most recent 80). The recipient is flagged `danger` only when it is a different address that shares at least 4 leading and 4 trailing characters with one of those counterparties (hex on EVM, base58 on Solana). BNB Chain has no free keyless tx index here, so that chain falls back to recent ERC-20 `Transfer` logs over about 800 blocks and says so.
+- **Dust spam:** `caution` when the recipient's visible history is only zero-value or dust incoming transfers and the senders look like poisoning spam (a lookalike of a known counterparty, lookalikes of each other, or three or more distinct zero-value senders). A normal small payment does not trip this.
+- **Scam / drainer flags:** free GoPlus address security, the same vendor the approval sweep already uses. Stealing, phishing, honeypot-related, blackmail and cybercrime are `danger`. Other GoPlus crime labels are `caution`. No flag is not a clean bill. Solana is not covered by that free API; the response lists it under `couldNotDetermine` and does not call the address safe because of that gap.
+- **Contract:** reports whether `to` has code. If `token` is set and `to` is that token's own contract, the verdict is `danger` (tokens sent to their own contract are often stuck). If `to` is some other contract and the bytecode, including a proxy implementation when one is found, has no `transfer`, `transferFrom` or generic execute selector, the verdict is `caution`. That selector scan misses odd dispatch and can be wrong. On Solana, a program, a mint, a token account for a different mint, or another program-owned account is `caution` when `token` is set.
+- **Fresh / empty:** `caution` when nonce (or Solana signature count) is 0, native balance is 0, and the history source returned no transactions. If history could not be loaded, the warning is marked partial.
+
+`safe` means none of those positive signals fired on the checks that completed. Items that could not be loaded stay in `couldNotDetermine` and do not get invented into a danger label. Bad input is a free 400. A failed recipient read is a 502 and is not charged.
 
 After deploy, index the three routes on CDP Bazaar with one paid call each ($0.06 total, settled to the service wallet):
 
@@ -128,11 +141,11 @@ npm install
 PAY_TO=0xYourAddress node server.js   # Base Sepolia + x402.org facilitator by default
 ```
 
-Environment variables: `SOLANA_RPC`, `PAY_TO`, `X402_NETWORK` (`eip155:8453` for mainnet), `FACILITATOR_URL` (`cdp` uses `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`), `PRICE`, `PRICE_SMALL`, `PRICE_VERDICT` (default `$0.02`), `PUBLIC_ORIGIN`, `BASE_RPC`, `ETH_RPC`, `BSC_RPC`. Deploys to Vercel as-is (`api/index.js`). A merge to `main` is what Vercel deploys.
+Environment variables: `SOLANA_RPC`, `PAY_TO`, `X402_NETWORK` (`eip155:8453` for mainnet), `FACILITATOR_URL` (`cdp` uses `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`), `PRICE`, `PRICE_SMALL`, `PRICE_SAFE` (default `$0.005`), `PRICE_VERDICT` (default `$0.02`), `PUBLIC_ORIGIN`, `BASE_RPC`, `ETH_RPC`, `BSC_RPC`. Deploys to Vercel as-is (`api/index.js`). A merge to `main` is what Vercel deploys.
 
 ## Data sources
 
-All data comes from free public sources: public RPCs, openchain.xyz signatures, Sourcify, ENS, MetaMask eth-phishing-detect, Phishing.Database and RDAP.
+All data comes from free public sources: public RPCs, openchain.xyz signatures, Sourcify, ENS, MetaMask eth-phishing-detect, Phishing.Database, RDAP, GoPlus (approval security and address security), and Blockscout / Routescan transaction lists.
 
 Risk and safety outputs are heuristics. They are not audits, security advice or financial advice.
 
