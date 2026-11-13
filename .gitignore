@@ -8,4 +8,5 @@ wallet*.json
 buyer*.json
 .vercel/
 .scratch/
+.cache/
 node_modules

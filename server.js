@@ -22,7 +22,7 @@ import { bscBundles } from "./bundles.js";
 import { honeypotCheck, HONEYPOT_CHAINS } from "./honeypot.js";
 import { tokenVerdict } from "./verdict.js";
 import { safeToSend } from "./safe-to-send.js";
-import { bscSmartMoney, bscSmartMoneyWallet } from "./smart-money.js";
+import { bscSmartMoney, bscSmartMoneyWallet, runSmartMoneyCron } from "./smart-money.js";
 import { CHAINS, CORE_CHAINS, LOOKUP_ONLY_CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -319,6 +319,13 @@ let bxAt = 0; const bxQ = () => routeCfg["GET /v1/bsc/bundles"]?.extensions?.baz
 app.use((req, res, next) => { if (Date.now() - bxAt > 6 * 3600e3 && bxQ()) { bxAt = Date.now();
   launches({ chain: "bsc", limit: 20 }).then(f => { const l = (f.launches || []).find(x => x.chain === "bsc" && /four/.test(x.pool?.dex || "") && (x.pool?.ageMinutes ?? 0) >= 3 && /^0x[0-9a-fA-F]{40}$/.test(x.token?.address || ""));
     if (l) bxQ().token = l.token.address; }).catch(() => { bxAt = Date.now() - 5.5 * 3600e3; }); } next(); });
+// Precompute. Not a paid route. Vercel Cron sends Authorization: Bearer $CRON_SECRET when that env var is set.
+app.get("/cron/smart-money", async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (secret && req.get("authorization") !== `Bearer ${secret}`) return res.status(401).json({ error: "unauthorized" });
+  try { res.json(await runSmartMoneyCron()); }
+  catch (e) { res.status(e.status || 500).json({ error: "smart-money cron failed", detail: String(e.message || e).slice(0, 300) }); }
+});
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
   try { res.json(await withDeadline(r.fn(routeValue(r, req), req.query), r.deadline)); }

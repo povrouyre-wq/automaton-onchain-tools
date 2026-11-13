@@ -5,7 +5,7 @@ const sockets = new Set(); const hang = net.createServer(x => { sockets.add(x); 
 Object.assign(process.env, { NO_LISTEN: "1", FACILITATOR_URL: `http://127.0.0.1:${hang.address().port}`, X402_NETWORK: "eip155:8453" });
 const { default: app } = await import("../server.js");
 const { indexEarlyWallets, isCoordinatedSniper, applyFundingTags } = await import("../bundles.js");
-const { judgeRun, rankSmartMoney, parseFactoryLogs, pickLaunches, isSprayBot, multipleFromOhlcv, bscSmartMoney, bscSmartMoneyWallet } = await import("../smart-money.js");
+const { judgeRun, rankSmartMoney, parseFactoryLogs, pickLaunches, isSprayBot, multipleFromOhlcv, bscSmartMoney, bscSmartMoneyWallet, gtFetchWithBackoff, runSmartMoneyCron, feedFromState, setSmartMoneyStore, memoryStore } = await import("../smart-money.js");
 const srv = app.listen(0); await new Promise(r => srv.once("listening", r)); srv.unref();
 const BASE = `http://127.0.0.1:${srv.address().port}`;
 test.after(() => { srv.close(); for (const x of sockets) x.destroy(); hang.close(); });
@@ -154,6 +154,67 @@ test("live feed returns lookback_hours and does not invent a multiple", { timeou
     const again = await bscSmartMoney({ limit: 5, minHits: 1 });
     assert.equal(again.cached, true); assert.equal(again.lookback_hours, r.lookback_hours);
   } catch (e) { assert.ok([502, 504].includes(e.status), e.message); }
+});
+
+test("GeckoTerminal 429 backs off and then accepts the next response", async () => {
+  let calls = 0; const slept = [];
+  const fetchImpl = async () => { calls++; return calls < 3 ? { status: 429, ok: false } : { status: 200, ok: true, json: async () => ({ ok: true }) }; };
+  const body = await gtFetchWithBackoff("/x", { fetchImpl, sleep: async ms => slept.push(ms), state: { next: 0 }, gapMs: 0 });
+  assert.deepEqual(body, { ok: true });
+  assert.deepEqual(slept, [1000, 2000]);
+});
+
+test("cron ticks accumulate scored launches and the paid routes only read that snapshot", async () => {
+  const FOUR = "0x5c952063c7fc8610ffdb798152d69f0b9550762b";
+  const GOOD = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const CREATOR = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const TOKENS = { "0x1111111111111111111111111111111111111111": 999000, "0x2222222222222222222222222222222222222222": 997000 };
+  const pad = a => "0x" + a.slice(2).padStart(64, "0");
+  const head = 1000000;
+  const rpc = async (method, params) => {
+    if (method === "eth_blockNumber") return "0x" + head.toString(16);
+    if (method === "eth_getBlockByNumber") { const n = Number(BigInt(params[0])); return { timestamp: "0x" + (1700000000 - (head - n)).toString(16) }; }
+    if (method === "eth_getCode") return "0x";
+    if (method === "eth_call") return "0x12";
+    if (method === "eth_getLogs") {
+      const f = params[0], from = Number(BigInt(f.fromBlock)), to = Number(BigInt(f.toBlock));
+      if (f.address === FOUR) return Object.entries(TOKENS).filter(([, block]) => block >= from && block <= to).map(([token, block]) => ({ blockNumber: "0x" + block.toString(16), transactionHash: "0x" + "ab".repeat(32), topics: ["0x396d5e902b675b032348d3d2e9517ee8f0c4a926603fbc075d3d282ff00cad20"], data: pad(CREATOR) + token.slice(2).padStart(64, "0") }));
+      const block = TOKENS[f.address];
+      if (block != null && block >= from && block <= to) return [{ address: f.address, blockNumber: "0x" + block.toString(16), logIndex: "0x1", transactionHash: "0x" + "cd".repeat(32), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", pad(FOUR), pad(GOOD)], data: "0x" + (10n ** 21n).toString(16).padStart(64, "0") }];
+      return [];
+    }
+    throw new Error("unexpected rpc " + method);
+  };
+  const gt = async path => path.includes("/ohlcv/")
+    ? { data: { attributes: { ohlcv_list: [[200, 1, 1, 1, 3, 1], [100, 1, 1, 1, 1, 1]] } }, meta: { base: { symbol: "TOK" } } }
+    : { data: [{ attributes: { address: "0xpool", name: "TOK / WBNB", reserve_in_usd: "5000", pool_created_at: "2026-11-01T00:00:00Z", transactions: { h1: { buys: 3, sells: 1 } } }, relationships: { dex: { data: { id: "four-meme" } } } }] };
+  const store = memoryStore();
+  setSmartMoneyStore(store);
+  const opts = { store, rpc, gt, perTick: 1, sliceBlocks: 2000, budgetMs: 5000 };
+  const first = await runSmartMoneyCron(opts);
+  const second = await runSmartMoneyCron(opts);
+  assert.equal(first.launchesScored, 1);
+  assert.equal(second.launchesScored, 2);
+  assert.ok(second.passes >= first.passes);
+  const feed = await bscSmartMoney({ limit: 5, minHits: 1 });
+  assert.equal(feed.cached, true); assert.equal(feed.precomputed, true);
+  assert.equal(typeof feed.lookback_hours, "number"); assert.equal(feed.partial, true);
+  assert.equal(feed.count, 1); assert.equal(feed.wallets[0].wallet, GOOD); assert.equal(feed.wallets[0].earlyHits, 2); assert.equal(feed.wallets[0].hitRate, 1);
+  assert.equal(feed.wallets[0].sampleTokens[0].multiple, 3);
+  const detail = await bscSmartMoneyWallet(GOOD);
+  assert.equal(detail.count, 2); assert.ok(detail.buys.every(b => b.early === true && b.status === "ran" && b.size === "1000"));
+  assert.equal(detail.lookback_hours, feed.lookback_hours);
+  assert.throws(() => feedFromState(null), e => e.status === 502);
+  setSmartMoneyStore(null);
+});
+
+test("cron route rejects a bad secret before any chain call", async () => {
+  process.env.CRON_SECRET = "test-secret";
+  try {
+    const r = await fetch(BASE + "/cron/smart-money", { headers: { authorization: "Bearer nope" } });
+    assert.equal(r.status, 401);
+    assert.equal(r.headers.get("payment-required"), null);
+  } finally { delete process.env.CRON_SECRET; }
 });
 
 test("live wallet route returns receipts or an honest empty window", { timeout: 70000 }, async () => {

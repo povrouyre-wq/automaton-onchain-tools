@@ -1,1 +1,5 @@
-{"rewrites":[{"source":"/(.*)","destination":"/api"}],"functions":{"api/index.js":{"maxDuration":60}}}
+{
+  "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
+  "crons": [{ "path": "/cron/smart-money", "schedule": "*/10 * * * *" }],
+  "functions": { "api/index.js": { "maxDuration": 60 } }
+}
