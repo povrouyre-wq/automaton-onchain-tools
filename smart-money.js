@@ -2,7 +2,9 @@
 // launches that then ran (about 2x vs the first public candle, and still trading). Free public BSC logs only, so the
 // window is whatever those nodes still serve (about 2 days, often less). Prices come from GeckoTerminal. Nothing here
 // is filled in when a source fails: the field stays null and partial is set.
-import { FOURMEME, WINDOW, indexEarlyWallets, isCoordinatedSniper, bscRpc, bscCall } from "./bundles.js";
+import { FOURMEME, WINDOW, indexEarlyWallets, isCoordinatedSniper, bscRpc, bscBlockAt } from "./bundles.js";
+import { activeStore } from "./smart-money-store.js";
+export { setSmartMoneyStore, memoryStore } from "./smart-money-store.js";
 
 const GT = "https://api.geckoterminal.com/api/v2";
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -14,7 +16,7 @@ const V3_FACTORY = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865";
 const FOUR_MANAGER = "0x5c952063c7fc8610ffdb798152d69f0b9550762b";
 const ZERO = "0x0000000000000000000000000000000000000000", DEAD = "0x000000000000000000000000000000000000dead";
 export const RUN_MULTIPLE = 2, MIN_LIQ_USD = 1000, FIRST_N = 20, MAX_SCORED = 8, LOOKBACK_CAP_HOURS = 48, MIN_AGE_SEC = 600;
-const FEED_TTL = 10 * 60 * 1000, LAUNCH_TTL = 20 * 60 * 1000, WALLET_TTL = 10 * 60 * 1000;
+const LAUNCH_TTL = 20 * 60 * 1000;
 // Pancake routers and a couple of 1inch routers. Contracts found by eth_getCode are dropped too.
 export const ROUTERS = new Set([
   "0x10ed43c718714eb63d5aa57b78b54704e256024e", "0x05ff2b0db69458a0750badebc4f9e13add608c7f",
@@ -27,9 +29,30 @@ const lc = a => String(a || "").toLowerCase();
 const hex = n => "0x" + Number(n).toString(16);
 const words = data => ((data || "0x").slice(2).match(/.{64}/g)) || [];
 const wordAddr = w => w && w.length >= 40 ? "0x" + w.slice(-40).toLowerCase() : null;
-const topicAddr = a => "0x" + a.slice(2).padStart(64, "0");
 const UA = { accept: "application/json", "user-agent": "automaton-onchain-tools/1.16 (+https://automaton-tx-explainer.vercel.app)" };
-let gtPauseUntil = 0;
+const gtState = { next: 0 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// One GeckoTerminal call at a time, at least 1.2s apart. A 429 waits 1s, 2s, then 4s, then this tick stops.
+export async function gtFetchWithBackoff(path, opts = {}) {
+  const fetchImpl = opts.fetchImpl || fetch;
+  const wait = opts.sleep || sleep;
+  const gapMs = opts.gapMs ?? 1200;
+  const now = opts.now || Date.now;
+  const state = opts.state || gtState;
+  const gap = state.next - now();
+  if (gap > 0) await wait(gap);
+  let lastErr = "GeckoTerminal rate limit";
+  for (let i = 0; i < 3; i++) {
+    let r;
+    try { r = await fetchImpl(GT + path, { headers: UA, signal: AbortSignal.timeout(8000) }); }
+    catch (e) { lastErr = String(e.message || e).slice(0, 140); await wait(500 * 2 ** i); continue; }
+    if (r.status === 429) { lastErr = "GeckoTerminal rate limit"; await wait(1000 * 2 ** i); continue; }
+    state.next = now() + gapMs;
+    if (!r.ok) throw new Error("GeckoTerminal " + r.status);
+    return typeof r.json === "function" ? r.json() : r;
+  }
+  throw Object.assign(new Error(lastErr), { rateLimit: /rate limit/i.test(lastErr) });
+}
 const DISCLAIMER = "Heuristic read of public BSC logs and GeckoTerminal prices. Early means among the first buyers in the launch block and the next 10 blocks. A hit is about a 2x move from the first public candle that is still trading. Not a copy-trade list and not financial advice.";
 
 async function pool(items, n, fn) {
@@ -37,13 +60,7 @@ async function pool(items, n, fn) {
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); } }));
   return out;
 }
-async function gt(path) {
-  if (Date.now() < gtPauseUntil) throw Object.assign(new Error("GeckoTerminal rate limit"), { rateLimit: true });
-  const r = await fetch(GT + path, { headers: UA, signal: AbortSignal.timeout(6000) });
-  if (r.status === 429) { gtPauseUntil = Date.now() + 20000; throw Object.assign(new Error("GeckoTerminal rate limit"), { rateLimit: true }); }
-  if (!r.ok) throw new Error("GeckoTerminal " + r.status);
-  return r.json();
-}
+const gt = path => gtFetchWithBackoff(path);
 
 export function multipleFromOhlcv(list) {
   if (!Array.isArray(list) || !list.length) return { multiple: null, lastTradeTs: null };
@@ -161,17 +178,25 @@ export function rankSmartMoney(reads, { minHits = 2, limit = 10 } = {}) {
 }
 
 const priceCache = new Map();
-async function priceOf(token, pairHint) {
-  const k = token + ":" + (pairHint || ""); const c = priceCache.get(k);
+async function priceOf(token, pairHint, gtFn = gt, preset) {
+  const k = token + ":" + (pairHint || "") + (preset ? ":p" : ""); const c = priceCache.get(k);
   if (c && Date.now() - c.at < LAUNCH_TTL && !(c.data && c.data.error)) return c.data;
-  const data = await priceOfUncached(token, pairHint);
+  const data = await priceOfUncached(token, pairHint, gtFn, preset);
   if (!data.error) priceCache.set(k, { at: Date.now(), data });
   return data;
 }
-async function priceOfUncached(token, pairHint) {
+async function priceOfUncached(token, pairHint, gtFn, preset) {
   try {
+    if (preset?.pool && preset.liquidityUsd != null && preset.txnsH1 != null) {
+      const candle = await gtFn(`/networks/bsc/pools/${preset.pool}/ohlcv/minute?aggregate=15&limit=200&currency=usd&token=base`);
+      const { multiple } = multipleFromOhlcv(candle.data?.attributes?.ohlcv_list);
+      const multipleR = roundMultiple(multiple);
+      const unusable = multipleR != null && (multipleR > 5000 || multipleR <= 0);
+      const symbol = candle.meta?.base?.symbol || preset.symbol || null;
+      return { multiple: unusable ? null : multipleR, liquidityUsd: Math.round(preset.liquidityUsd * 100) / 100, txnsH1: preset.txnsH1, symbol: symbol ? String(symbol).slice(0, 24) : null, pool: preset.pool, dex: preset.dex || null, createdAt: preset.createdAt || null, error: multipleR == null ? "no usable OHLCV candles" : unusable ? "candle ratio is not a usable price" : null };
+    }
     let poolAddr = pairHint, symbol = null, liquidityUsd = null, txnsH1 = null, dex = null;
-    const pools = await gt(`/networks/bsc/tokens/${token}/pools?page=1`);
+    const pools = await gtFn(`/networks/bsc/tokens/${token}/pools?page=1`);
     const list = pools.data || [];
     if (!list.length) return { multiple: null, liquidityUsd: null, txnsH1: null, symbol: null, pool: null, dex: null, createdAt: null, error: "no GeckoTerminal pool for this token" };
     const pick = pairHint ? list.find(p => lc(p.attributes?.address) === lc(pairHint)) || list[0] : list[0];
@@ -188,7 +213,7 @@ async function priceOfUncached(token, pairHint) {
     if (!poolAddr) return { multiple: null, liquidityUsd, txnsH1, symbol, pool: null, dex, error: "no GeckoTerminal pool for this token" };
     if (txnsH1 == null || liquidityUsd == null) {
       try {
-        const one = await gt(`/networks/bsc/pools/${poolAddr}`);
+        const one = await gtFn(`/networks/bsc/pools/${poolAddr}`);
         const a = one.data?.attributes || {};
         if (liquidityUsd == null && a.reserve_in_usd != null && a.reserve_in_usd !== "") liquidityUsd = Number(a.reserve_in_usd);
         const h1 = a.transactions?.h1;
@@ -197,15 +222,17 @@ async function priceOfUncached(token, pairHint) {
         if (!createdAt) createdAt = a.pool_created_at || null;
       } catch { /* missing reserve stays null */ }
     }
-    const candle = await gt(`/networks/bsc/pools/${poolAddr}/ohlcv/minute?aggregate=15&limit=200&currency=usd&token=base`);
+    const candle = await gtFn(`/networks/bsc/pools/${poolAddr}/ohlcv/minute?aggregate=15&limit=200&currency=usd&token=base`);
     const { multiple, lastTradeTs } = multipleFromOhlcv(candle.data?.attributes?.ohlcv_list);
     const baseSym = candle.meta?.base?.symbol;
     if (baseSym) symbol = String(baseSym).slice(0, 24);
     if (!Number.isFinite(liquidityUsd)) liquidityUsd = null;
     if (!Number.isFinite(txnsH1)) txnsH1 = null;
-    return { multiple: roundMultiple(multiple), liquidityUsd: liquidityUsd == null ? null : Math.round(liquidityUsd * 100) / 100, txnsH1, symbol, pool: poolAddr, dex, createdAt, lastTradeTs, error: multiple == null ? "no usable OHLCV candles" : null };
+    const multipleR = roundMultiple(multiple);
+    const unusable = multipleR != null && (multipleR > 5000 || multipleR <= 0);
+    return { multiple: unusable ? null : multipleR, liquidityUsd: liquidityUsd == null ? null : Math.round(liquidityUsd * 100) / 100, txnsH1, symbol, pool: poolAddr, dex, createdAt, lastTradeTs, error: multipleR == null ? "no usable OHLCV candles" : unusable ? "candle ratio is not a usable price" : null };
   } catch (e) {
-    return { multiple: null, liquidityUsd: null, txnsH1: null, symbol: null, pool: pairHint || null, dex: null, error: String(e.message || e).slice(0, 140), rateLimit: !!e.rateLimit };
+    return { multiple: null, liquidityUsd: null, txnsH1: null, symbol: null, pool: pairHint || null, dex: null, createdAt: null, error: String(e.message || e).slice(0, 140), rateLimit: !!e.rateLimit };
   }
 }
 
@@ -225,12 +252,13 @@ async function readLaunch(launch, ctx) {
   return data;
 }
 async function readLaunchUncached(launch, ctx) {
+  const rpc = ctx.rpc || bscRpc;
   const venues = launch.venue === "four.meme" ? new Set(FOURMEME) : new Set([launch.pair]);
   let creator = launch.creator;
-  if (!creator && launch.tx) { try { const t = await bscRpc("eth_getTransactionByHash", [launch.tx], 6000); creator = lc(t?.from); } catch { creator = null; } }
+  if (!creator && launch.tx) { try { const t = await rpc("eth_getTransactionByHash", [launch.tx], 6000); creator = lc(t?.from); } catch { creator = null; } }
   const devs = new Set(creator ? [creator] : []);
   let logs;
-  try { logs = await bscRpc("eth_getLogs", [{ address: launch.token, topics: [TRANSFER], fromBlock: hex(Math.max(1, launch.block - 1)), toBlock: hex(launch.block + WINDOW) }], 8000); }
+  try { logs = await rpc("eth_getLogs", [{ address: launch.token, topics: [TRANSFER], fromBlock: hex(Math.max(1, launch.block - 1)), toBlock: hex(launch.block + WINDOW) }], 8000); }
   catch (e) { return { token: launch.token, venue: launch.venue, block: launch.block, error: "early-buy logs failed: " + String(e.message || e).slice(0, 120), buyers: [], ran: null, multiple: null, symbol: null }; }
   let ev = withRouterHops(parseTransfers(logs), venues);
   const indexed = indexEarlyWallets(ev, { venues, devs, token: launch.token, launchBlock: launch.block });
@@ -252,16 +280,16 @@ async function readLaunchUncached(launch, ctx) {
     const t = entryTimeIso(w.firstBlock, timed);
     return { wallet: w.address, early: early.has(w.address), excluded: !!excludeReason, excludeReason, received: w.received.toString(), ...t };
   });
-  const price = ctx.skipPrice ? { multiple: null, liquidityUsd: null, txnsH1: null, symbol: null, error: null } : await priceOf(launch.token, launch.pair);
+  const price = ctx.skipPrice ? { multiple: null, liquidityUsd: null, txnsH1: null, symbol: null, error: null } : await priceOf(launch.token, launch.pair, ctx.gt || gt, launch.preset);
   const ran = judgeRun(price);
-  return { token: launch.token, symbol: price.symbol || null, venue: launch.venue, block: launch.block, pair: price.pool || launch.pair, buyers, ran, multiple: price.multiple ?? null, liquidityUsd: price.liquidityUsd ?? null, txnsH1: price.txnsH1 ?? null, priceError: price.error || null, error: null, creator };
+  return { token: launch.token, symbol: price.symbol || null, venue: launch.venue, block: launch.block, pair: price.pool || launch.pair, buyers, ran, multiple: price.multiple ?? null, liquidityUsd: price.liquidityUsd ?? null, txnsH1: price.txnsH1 ?? null, priceError: price.error || null, rateLimit: !!price.rateLimit, error: null, creator };
 }
 
-async function markContracts(reads) {
+async function markContracts(reads, rpc = bscRpc) {
   const addrs = [...new Set(reads.flatMap(r => (r.buyers || []).filter(b => b.early && !b.excluded).map(b => b.wallet)))];
   const code = new Map(); let failed = 0;
-  await pool(addrs.slice(0, 80), 10, async a => {
-    try { const c = await bscRpc("eth_getCode", [a, "latest"], 5000); code.set(a, !!(c && c !== "0x")); }
+  await pool(addrs.slice(0, 40), 6, async a => {
+    try { const c = await rpc("eth_getCode", [a, "latest"], 5000); code.set(a, !!(c && c !== "0x")); }
     catch { code.set(a, null); failed++; }
   });
   for (const r of reads) for (const b of r.buyers || []) {
@@ -273,84 +301,222 @@ async function markContracts(reads) {
   return { checked: Math.min(addrs.length, 80), failed, truncated: addrs.length > 80 };
 }
 
-function ranges(head, oldest) {
-  const width = 3500, n = 6, out = [];
-  for (let i = 0; i < n; i++) {
-    const end = i === 0 ? head : Math.max(oldest + width, head - Math.round((head - oldest) * i / (n - 1)));
-    out.push([Math.max(oldest, end - width), Math.min(head, end)]);
+
+const PER_TICK = 4, SLICE_BLOCKS = 20000, MAX_STORED = 160;
+const snapMemo = { at: 0, state: undefined };
+
+function emptyState() {
+  return { version: 1, updatedAt: null, cursorBlock: null, gtPage: 1, passes: 0, oldestBlock: null, head: null, headTime: null, blockTime: 0.45, queue: [], launches: {}, errors: [], ranked: [], partial: true, lookback_hours: null, coverage: {} };
+}
+function parseGtNewPools(j) {
+  const inc = new Map((j?.included || []).map(x => [x.id, x]));
+  const out = [];
+  for (const p of j?.data || []) {
+    const a = p.attributes || {};
+    const dex = p.relationships?.dex?.data?.id || "";
+    if (!/four|pancake/i.test(dex)) continue;
+    const base = inc.get(p.relationships?.base_token?.data?.id);
+    const token = lc(base?.attributes?.address || "");
+    if (!/^0x[0-9a-f]{40}$/.test(token) || MAJORS.has(token)) continue;
+    const h1 = a.transactions?.h1;
+    const txnsH1 = h1 ? (Number(h1.buys) || 0) + (Number(h1.sells) || 0) : null;
+    const liquidityUsd = a.reserve_in_usd == null || a.reserve_in_usd === "" ? null : Number(a.reserve_in_usd);
+    out.push({
+      token, pair: lc(a.address || ""), dex, createdAt: a.pool_created_at || null, txnsH1, liquidityUsd,
+      symbol: base?.attributes?.symbol ? String(base.attributes.symbol).slice(0, 24) : null,
+      venue: /four/i.test(dex) ? "four.meme" : /v3|infinity/i.test(dex) ? "pancakeswap-v3" : "pancakeswap-v2",
+    });
   }
   return out;
 }
-async function discover(head, oldest, errors) {
-  const found = { v2: [], v3: [], four: [] };
-  await pool(ranges(head, oldest), 4, async ([from, to]) => {
-    const q = async (address, topic, key) => {
-      try { found[key].push(...await bscRpc("eth_getLogs", [{ address, topics: [topic], fromBlock: hex(from), toBlock: hex(to) }], 9000)); }
-      catch (e) { errors.push(`${key} logs ${from}-${to} failed: ${String(e.message || e).slice(0, 100)}`); }
-    };
-    await Promise.all([q(V2_FACTORY, PAIR_CREATED, "v2"), q(V3_FACTORY, POOL_CREATED, "v3"), q(FOUR_MANAGER, TOKEN_CREATE, "four")]);
-  });
-  return parseFactoryLogs(found);
-}
 
-const feedCache = { at: 0, core: null }; let feedInflight = null; let knownLaunches = [];
-async function computeFeed() {
+export async function warmSmartMoneyTick(prev, opts = {}) {
+  const rpc = opts.rpc || bscRpc;
+  const gtFn = opts.gt || gt;
+  const budgetMs = opts.budgetMs ?? 40000;
+  const perTick = opts.perTick ?? PER_TICK;
+  const sliceBlocks = opts.sliceBlocks ?? SLICE_BLOCKS;
+  const until = Date.now() + budgetMs;
+  const state = prev ? JSON.parse(JSON.stringify(prev)) : emptyState();
+  state.queue ||= []; state.launches ||= {}; state.errors = [];
   const errors = [];
-  const head = Number(BigInt(await bscRpc("eth_blockNumber", [], 6000)));
-  const headBlock = await bscRpc("eth_getBlockByNumber", [hex(head), false], 6000);
+  const head = Number(BigInt(await rpc("eth_blockNumber", [], 6000)));
+  const headBlock = await rpc("eth_getBlockByNumber", [hex(head), false], 6000);
   const headTime = Number(BigInt(headBlock.timestamp));
-  const past = await bscRpc("eth_getBlockByNumber", [hex(Math.max(1, head - 20000)), false], 6000);
-  const blockTime = (headTime - Number(BigInt(past.timestamp))) / 20000 || 0.45;
+  const past = await rpc("eth_getBlockByNumber", [hex(Math.max(1, head - 20000)), false], 6000);
+  const blockTime = (headTime - Number(BigInt(past.timestamp))) / 20000 || state.blockTime || 0.45;
   let oldest = Math.max(1, head - Math.round(LOOKBACK_CAP_HOURS * 3600 / blockTime));
-  try { await bscRpc("eth_getLogs", [{ address: V2_FACTORY, topics: [PAIR_CREATED], fromBlock: hex(oldest), toBlock: hex(oldest + 5) }], 8000); }
+  try { await rpc("eth_getLogs", [{ address: V2_FACTORY, topics: [PAIR_CREATED], fromBlock: hex(oldest), toBlock: hex(Math.min(head, oldest + 5)) }], 8000); }
   catch (e) {
     errors.push("logs at about 48h failed: " + String(e.message || e).slice(0, 100));
-    let found = false;
-    for (const h of [36, 24, 12, 6]) {
-      const from = Math.max(1, head - Math.round(h * 3600 / blockTime));
-      try { await bscRpc("eth_getLogs", [{ address: V2_FACTORY, topics: [PAIR_CREATED], fromBlock: hex(from), toBlock: hex(from + 5) }], 8000); oldest = from; found = true; break; }
-      catch (err) { errors.push(`logs about ${h}h back failed: ${String(err.message || err).slice(0, 80)}`); }
-    }
-    if (!found) throw Object.assign(new Error("BNB Chain log history could not be read, not charged"), { status: 502 });
+    oldest = Math.max(1, head - Math.round(24 * 3600 / blockTime));
   }
-  const lookbackHours = Math.round(((head - oldest) * blockTime / 3600) * 10) / 10;
-  const discovered = await discover(head, oldest, errors);
-  knownLaunches = discovered;
-  if (!discovered.length && errors.length) throw Object.assign(new Error("BNB Chain launch logs failed, not charged: " + errors[0]), { status: 502 });
-  const picked = pickLaunches(discovered, { head, blockTime });
-  const ctx = { head, headTime, blockTime };
-  const reads = (await pool(picked, 2, launch => readLaunch(launch, ctx))).filter(Boolean);
-  if (picked.length && !reads.some(r => !r.error)) throw Object.assign(new Error("early-buy logs failed for every sampled launch, not charged"), { status: 502 });
-  const code = await markContracts(reads);
-  if (code.failed) errors.push(`contract-code read failed for ${code.failed} early wallet(s); those wallets were kept, not dropped`);
-  const priced = reads.filter(r => !r.error && r.ran !== null).length;
-  const priceErrors = reads.filter(r => r.priceError);
-  if (priceErrors.length) errors.push(`price or liquidity missing for ${priceErrors.length} launch(es); they are not counted as hits or misses. Example: ${priceErrors[0].token} ${priceErrors[0].priceError}`);
+  state.head = head; state.headTime = headTime; state.blockTime = blockTime; state.oldestBlock = oldest;
+  for (const token of Object.keys(state.launches)) if (state.launches[token].block < oldest) delete state.launches[token];
+  state.queue = state.queue.filter(l => l.block >= oldest && !state.launches[l.token]);
+
+  if (Date.now() < until && opts.gtPages !== false) {
+    const page = state.gtPage >= 1 && state.gtPage <= 10 ? state.gtPage : 1;
+    try {
+      const listed = parseGtNewPools(await gtFn(`/networks/bsc/new_pools?page=${page}&include=base_token,dex`));
+      const known = new Set([...Object.keys(state.launches), ...state.queue.map(l => l.token)]);
+      const alive = listed.filter(l => !known.has(l.token) && l.txnsH1 >= 5 && l.liquidityUsd >= MIN_LIQ_USD && l.pair)
+        .sort((a, b) => b.txnsH1 - a.txnsH1 || b.liquidityUsd - a.liquidityUsd);
+      for (const l of alive.slice(0, perTick)) {
+        if (Date.now() > until) break;
+        let block = null;
+        if (l.createdAt && Number.isFinite(Date.parse(l.createdAt))) {
+          try { block = await (opts.blockAt || bscBlockAt)(Math.floor(Date.parse(l.createdAt) / 1000), head); } catch (e) { errors.push(`launch block for ${l.token} failed: ${String(e.message || e).slice(0, 80)}`); }
+        }
+        if (!block || block > head - Math.round(MIN_AGE_SEC / blockTime)) continue;
+        state.queue.push({ token: l.token, pair: l.pair, block, tx: null, venue: l.venue, creator: null, tries: 0, preset: { pool: l.pair, liquidityUsd: l.liquidityUsd, txnsH1: l.txnsH1, symbol: l.symbol, dex: l.dex, createdAt: l.createdAt } });
+        known.add(l.token);
+      }
+      state.gtPage = page >= 10 ? 1 : page + 1;
+    } catch (e) { errors.push("GeckoTerminal new pools failed: " + String(e.message || e).slice(0, 120)); }
+  }
+  if (Date.now() < until) {
+    // Always walk backward one slice per run, and keep only a few launches from it.
+    // A long queue of the newest slice would stop the cursor and never reach launches old enough to have run.
+    let cursor = state.cursorBlock;
+    if (cursor == null || cursor <= oldest + 10) cursor = head;
+    const to = Math.min(head, cursor);
+    const from = Math.max(oldest, to - sliceBlocks + 1);
+    const found = { v2: [], v3: [], four: [] };
+    const pull = async (address, topic, key) => {
+      try { found[key].push(...await rpc("eth_getLogs", [{ address, topics: [topic], fromBlock: hex(from), toBlock: hex(to) }], 9000)); }
+      catch (e) { errors.push(`${key} logs ${from}-${to} failed: ${String(e.message || e).slice(0, 100)}`); }
+    };
+    await Promise.all([pull(V2_FACTORY, PAIR_CREATED, "v2"), pull(V3_FACTORY, POOL_CREATED, "v3"), pull(FOUR_MANAGER, TOKEN_CREATE, "four")]);
+    const known = new Set([...Object.keys(state.launches), ...state.queue.map(l => l.token)]);
+    const discovered = parseFactoryLogs(found).filter(l => !known.has(l.token));
+    const picked = [...discovered.filter(l => l.venue === "four.meme"), ...discovered.filter(l => l.venue !== "four.meme")].slice(0, perTick);
+    for (const l of picked) state.queue.push({ token: l.token, pair: l.pair, block: l.block, tx: l.tx, venue: l.venue, creator: l.creator, tries: 0 });
+    const wrapped = from <= oldest + 1;
+    state.cursorBlock = wrapped ? head : from - 1;
+    if (wrapped && cursor !== head) state.passes = (state.passes || 0) + 1;
+  }
+
+  const minBlock = head - Math.round(MIN_AGE_SEC / blockTime);
+  const ready = state.queue.filter(l => l.block <= minBlock).sort((a, b) => (b.preset ? 1 : 0) - (a.preset ? 1 : 0) || (b.venue === "four.meme") - (a.venue === "four.meme") || b.block - a.block);
+  const scoredNow = [];
+  for (const launch of ready.slice(0, perTick)) {
+    if (Date.now() > until) { errors.push("stopped early so the cron stays inside the time limit"); break; }
+    const row = await readLaunch(launch, { head, headTime, blockTime, rpc, gt: gtFn });
+    state.queue = state.queue.filter(l => l.token !== launch.token);
+    if (row.rateLimit && (launch.tries || 0) < 2) {
+      state.queue.push({ ...launch, tries: (launch.tries || 0) + 1 });
+      errors.push(`${launch.token} price was rate-limited; it stays queued`);
+      continue;
+    }
+    let decimals = null;
+    try { const d = await rpc("eth_call", [{ to: launch.token, data: "0x313ce567" }, "latest"], 5000); const n = Number(BigInt(d || "0x0")); if (n >= 0 && n <= 36) decimals = n; }
+    catch { decimals = null; }
+    row.buyers = (row.buyers || []).slice(0, 40);
+    state.launches[launch.token] = { ...row, decimals, readAt: new Date().toISOString() };
+    scoredNow.push(state.launches[launch.token]);
+  }
+  if (scoredNow.length) await markContracts(scoredNow, rpc);
+  const kept = Object.values(state.launches).sort((a, b) => b.block - a.block).slice(0, MAX_STORED);
+  state.launches = Object.fromEntries(kept.map(r => [r.token, r]));
+  const reads = Object.values(state.launches);
   const ranked = rankSmartMoney(reads, { minHits: 1, limit: 100 });
-  const partial = errors.length > 0 || discovered.length > reads.filter(r => !r.error).length || code.truncated || code.failed > 0;
+  const priceErrors = reads.filter(r => r.priceError);
+  if (priceErrors.length) errors.push(`price or liquidity missing for ${priceErrors.length} stored launch(es); they are not counted as hits or misses`);
+  const oldestScored = reads.length ? Math.min(...reads.map(r => r.block)) : (state.cursorBlock || head);
+  const lookbackHours = Math.round(((head - oldestScored) * blockTime / 3600) * 10) / 10;
+  state.updatedAt = new Date().toISOString();
+  state.errors = errors.slice(0, 12);
+  state.lookback_hours = lookbackHours;
+  state.partial = state.queue.length > 0 || (state.passes || 0) < 1 || priceErrors.length > 0 || errors.some(e => /failed|rate|stopped/i.test(e));
+  state.ranked = ranked.wallets;
+  state.coverage = {
+    launchesScored: reads.length, launchesQueued: state.queue.length, launchesPriced: reads.filter(r => !r.error && r.ran !== null).length,
+    launchesRan: reads.filter(r => r.ran === true).length, launchesDidNotRun: reads.filter(r => r.ran === false).length,
+    passes: state.passes || 0, scoredThisTick: scoredNow.length, cursorBlock: state.cursorBlock,
+    fundingLinks: "bundled transactions and dev hand-outs use the bundle-check classifier. Shared-funder links are not re-read.",
+    excluded: ranked.excluded,
+    note: "The cron samples more launches on each run and stores them. A paid call only reads this snapshot. Hit rate ignores a launch whose price is missing. About 2x is the first public candle versus the latest close, not the wallet's fill.",
+  };
+  return state;
+}
+
+export function feedFromState(state, { limit, minHits } = {}) {
+  if (!state?.updatedAt) throw Object.assign(new Error("smart-money cache is empty (the cron has not filled it yet), not charged"), { status: 502 });
+  const lim = clampLimit(limit), min = clampMinHits(minHits);
+  const wallets = (state.ranked || []).filter(w => w.earlyHits >= min).slice(0, lim);
   return {
-    type: "bsc-smart-money", chain: "bsc", generatedAt: new Date().toISOString(), cached: false,
-    lookback_hours: lookbackHours,
-    lookback_note: `Free public BNB Chain RPC answered logs about ${lookbackHours} hours back on this call. The usual cap is about ${LOOKBACK_CAP_HOURS} hours and it moves as nodes prune. Early-buyer reads cover a sample of four.meme and PancakeSwap v2/v3 launches inside that window, not every launch.`,
-    partial, errors,
-    filters: { limit: 10, minHits: 2, runMultiple: RUN_MULTIPLE, earlyBlocks: WINDOW, firstBuyers: FIRST_N, minLiquidityUsd: MIN_LIQ_USD },
-    coverage: {
-      launchesDiscovered: discovered.length, launchesRead: reads.filter(r => !r.error).length, launchesPriced: priced,
-      launchesRan: reads.filter(r => r.ran === true).length, launchesDidNotRun: reads.filter(r => r.ran === false).length,
-      tooNewToScore: discovered.filter(l => l.block > head - Math.round(MIN_AGE_SEC / blockTime)).length,
-      codeChecks: code, fundingLinks: "bundled transactions and dev hand-outs use the bundle-check classifier. Shared-funder links (full blocks before launch) are not re-read on this multi-launch call.",
-      excluded: ranked.excluded,
-      note: "Hit rate uses only launches where price, liquidity and recent trades were all read. A missing price is left out of the rate. About 2x is the first 15-minute candle's open versus the latest close, which is not the wallet's fill.",
-    },
-    wallets: ranked.wallets,
+    type: "bsc-smart-money", chain: "bsc", generatedAt: state.updatedAt, cached: true, precomputed: true,
+    lookback_hours: state.lookback_hours,
+    lookback_note: `Precomputed from free public BNB Chain logs. The oldest scored launch in this snapshot is about ${state.lookback_hours} hours back. The usual cap is about ${LOOKBACK_CAP_HOURS} hours. Each cron run samples another slice; this is not every launch in that window.`,
+    partial: !!state.partial, errors: state.errors || [],
+    filters: { limit: lim, minHits: min, runMultiple: RUN_MULTIPLE, earlyBlocks: WINDOW, firstBuyers: FIRST_N, minLiquidityUsd: MIN_LIQ_USD },
+    coverage: state.coverage || {}, count: wallets.length, wallets, disclaimer: DISCLAIMER,
+  };
+}
+
+export function walletFromState(state, wallet) {
+  if (!state?.updatedAt) throw Object.assign(new Error("smart-money cache is empty (the cron has not filled it yet), not charged"), { status: 502 });
+  const buys = [];
+  for (const row of Object.values(state.launches || {})) {
+    for (const b of row.buyers || []) {
+      if (b.wallet !== wallet) continue;
+      const early = !!(b.early && !b.excluded);
+      buys.push({
+        token: row.token, symbol: row.symbol || null, time: b.entryTime || null, timeApprox: !!b.entryTimeApprox,
+        size: formatUnits(b.received, row.decimals), sizeRaw: b.received || null, decimals: row.decimals ?? null,
+        early, earlyBasis: early ? "first_blocks" : null,
+        status: row.ran === true ? "ran" : row.ran === false ? "did_not_run" : "unknown",
+        multiple: row.multiple ?? null,
+        stillTrading: row.liquidityUsd == null || row.txnsH1 == null ? null : row.liquidityUsd >= MIN_LIQ_USD && row.txnsH1 > 0,
+        liquidityUsd: row.liquidityUsd ?? null, priceError: row.priceError || null,
+      });
+    }
+  }
+  buys.sort((a, b) => String(b.time || "").localeCompare(String(a.time || "")));
+  const shown = buys.slice(0, 20);
+  return {
+    type: "bsc-smart-money-wallet", chain: "bsc", wallet, generatedAt: state.updatedAt, cached: true, precomputed: true,
+    lookback_hours: state.lookback_hours,
+    lookback_note: `Receipts come from the launches the cron has already scored, about ${state.lookback_hours} hours back. The usual cap is about ${LOOKBACK_CAP_HOURS} hours. This call does not scan logs.`,
+    partial: !!state.partial || shown.some(b => b.status === "unknown"),
+    errors: state.errors || [], count: shown.length, buys: shown,
+    coverage: { launchesScored: Object.keys(state.launches || {}).length, receipts: buys.length, listed: shown.length, note: "Each row is a buy in a scored launch's first blocks. early is true only for the first 20 buyers who are not a router, deployer, or bundled sniper. size is tokens received, not USD." },
     disclaimer: DISCLAIMER,
   };
 }
-async function coreFeed() {
-  if (feedCache.core && Date.now() - feedCache.at < FEED_TTL) return { ...feedCache.core, cached: true, generatedAt: feedCache.core.generatedAt };
-  if (!feedInflight) feedInflight = computeFeed().then(core => { feedCache.at = Date.now(); feedCache.core = core; return core; }).finally(() => { feedInflight = null; });
-  return feedInflight;
+
+async function loadSnapshot() {
+  if (snapMemo.state !== undefined && Date.now() - snapMemo.at < 20000) return snapMemo.state;
+  const state = await (await activeStore()).load();
+  snapMemo.at = Date.now(); snapMemo.state = state || null;
+  return snapMemo.state;
 }
+export async function runSmartMoneyCron(opts = {}) {
+  const store = opts.store || await activeStore();
+  const prev = opts.prev !== undefined ? opts.prev : await store.load();
+  const next = await warmSmartMoneyTick(prev, opts);
+  await store.save(next);
+  snapMemo.at = Date.now(); snapMemo.state = next;
+  return { ok: true, lookback_hours: next.lookback_hours, partial: next.partial, launchesScored: next.coverage.launchesScored, launchesQueued: next.coverage.launchesQueued, launchesRan: next.coverage.launchesRan, scoredThisTick: next.coverage.scoredThisTick, wallets: next.ranked.length, passes: next.passes || 0, errors: next.errors };
+}
+export async function bscSmartMoney({ limit, minHits } = {}) {
+  try { return feedFromState(await loadSnapshot(), { limit, minHits }); }
+  catch (e) { if (e.status) throw e; throw Object.assign(new Error("smart-money cache read failed, not charged: " + String(e.message || e).slice(0, 160)), { status: 502 }); }
+}
+export async function bscSmartMoneyWallet(walletIn) {
+  try { return walletFromState(await loadSnapshot(), lc(walletIn)); }
+  catch (e) { if (e.status) throw e; throw Object.assign(new Error("smart-money cache read failed, not charged: " + String(e.message || e).slice(0, 160)), { status: 502 }); }
+}
+
+function formatUnits(raw, decimals) {
+  if (decimals == null || raw == null) return null;
+  let v; try { v = BigInt(raw); } catch { return null; }
+  const neg = v < 0n, s = (neg ? -v : v).toString().padStart(decimals + 1, "0");
+  const whole = s.slice(0, s.length - decimals), frac = s.slice(s.length - decimals).replace(/0+$/, "");
+  return (neg ? "-" : "") + (frac ? `${whole}.${frac}` : whole);
+}
+
 export function clampLimit(v) {
   if (v == null || v === "") return 10;
   const n = +v; if (!Number.isInteger(n) || n < 1 || n > 20) throw Object.assign(new Error("limit must be an integer from 1 to 20"), { status: 400 });
@@ -360,127 +526,4 @@ export function clampMinHits(v) {
   if (v == null || v === "") return 2;
   const n = +v; if (!Number.isInteger(n) || n < 1 || n > 10) throw Object.assign(new Error("minHits must be an integer from 1 to 10"), { status: 400 });
   return n;
-}
-export async function bscSmartMoney({ limit, minHits } = {}) {
-  const lim = clampLimit(limit), min = clampMinHits(minHits);
-  let core;
-  try { core = await coreFeed(); }
-  catch (e) { if (e.status) throw e; throw Object.assign(new Error("BNB Chain smart-money feed failed, not charged: " + String(e.message || e).slice(0, 160)), { status: 502 }); }
-  const wallets = core.wallets.filter(w => w.earlyHits >= min).slice(0, lim);
-  return { ...core, cached: !!core.cached, filters: { ...core.filters, limit: lim, minHits: min }, count: wallets.length, wallets };
-}
-
-function formatUnits(raw, decimals) {
-  if (decimals == null || raw == null) return null;
-  const v = BigInt(raw), neg = v < 0n, s = (neg ? -v : v).toString().padStart(decimals + 1, "0");
-  const whole = s.slice(0, s.length - decimals), frac = s.slice(s.length - decimals).replace(/0+$/, "");
-  return (neg ? "-" : "") + (frac ? `${whole}.${frac}` : whole);
-}
-async function decimalsOf(token) {
-  try { const r = await bscRpc("eth_call", [{ to: token, data: "0x313ce567" }, "latest"], 5000); const n = Number(BigInt(r || "0x0")); return n >= 0 && n <= 36 ? n : null; }
-  catch { return null; }
-}
-
-const walletCache = new Map();
-export async function bscSmartMoneyWallet(walletIn) {
-  const wallet = lc(walletIn);
-  const hit = walletCache.get(wallet);
-  if (hit && Date.now() - hit.at < WALLET_TTL) return { ...hit.data, cached: true };
-  let data;
-  try { data = await walletUncached(wallet); }
-  catch (e) { if (e.status) throw e; throw Object.assign(new Error("BNB Chain wallet lookback failed, not charged: " + String(e.message || e).slice(0, 160)), { status: 502 }); }
-  walletCache.set(wallet, { at: Date.now(), data });
-  return { ...data, cached: false };
-}
-async function walletUncached(wallet) {
-  const errors = [];
-  // Public BSC RPCs reject eth_getLogs with no contract address, so receipts are read per launch we already found.
-  await coreFeed();
-  const launches = knownLaunches;
-  if (!launches.length) throw Object.assign(new Error("no four.meme or PancakeSwap launches in the log window, not charged"), { status: 502 });
-  const head = Number(BigInt(await bscRpc("eth_blockNumber", [], 6000)));
-  const headBlock = await bscRpc("eth_getBlockByNumber", [hex(head), false], 6000);
-  const headTime = Number(BigInt(headBlock.timestamp));
-  const past = await bscRpc("eth_getBlockByNumber", [hex(Math.max(1, head - 20000)), false], 6000);
-  const blockTime = (headTime - Number(BigInt(past.timestamp))) / 20000 || 0.45;
-  const sorted = [...launches].sort((a, b) => b.block - a.block);
-  const watched = spreadLaunches(sorted, 15);
-  const floor = Math.max(1, Math.min(...watched.map(l => l.block)) - 5);
-  const byToken = new Map(watched.map(l => [l.token, l]));
-  // Public nodes reject big address batches and answer "forbidden" as plain text. Keep batches small.
-  const batches = []; for (let i = 0; i < watched.length; i += 5) batches.push(watched.slice(i, i + 5).map(l => l.token));
-  const events = []; let oldest = head, failed = false, stopped = false;
-  const logUrls = (process.env.BSC_LOG_RPC || "https://bsc-rpc.publicnode.com").split(",");
-  const until = Date.now() + 18000;
-  await pool(batches, 2, async addrs => {
-    let to = head, span = 50000;
-    for (let guard = 0; guard < 10 && to >= floor && events.length < 1500; guard++) {
-      if (Date.now() > until) { stopped = true; break; }
-      const from = Math.max(floor, to - span + 1);
-      try {
-        const logs = await bscCall(logUrls, "eth_getLogs", [{ address: addrs, topics: [TRANSFER, null, topicAddr(wallet)], fromBlock: hex(from), toBlock: hex(to) }], 8000);
-        for (const l of logs) events.push(l);
-        oldest = Math.min(oldest, from); to = from - 1; span = 50000;
-      } catch (e) {
-        const msg = String(e.message || e);
-        if (/max results|too many|exceed|limit|response size/i.test(msg) && span > 5000) { span = Math.max(5000, Math.floor(span / 4)); continue; }
-        errors.push(`transfer logs ${from}-${to} failed: ${msg.slice(0, 120)}`);
-        failed = true; break;
-      }
-    }
-  });
-  if (!events.length && failed && oldest === head) throw Object.assign(new Error("BNB Chain transfer logs failed, not charged: " + errors[0]), { status: 502 });
-  const lookbackHours = Math.round(((head - oldest) * blockTime / 3600) * 10) / 10;
-  const incoming = events.map(l => ({
-    token: lc(l.address), block: Number(BigInt(l.blockNumber)), tx: l.transactionHash,
-    from: wordAddr(l.topics?.[1]?.slice(2)), value: BigInt(l.data && l.data !== "0x" ? l.data : "0x0"),
-  })).filter(e => e.token && e.from && e.value > 0n && !MAJORS.has(e.token) && e.token !== wallet);
-  const grouped = new Map();
-  for (const e of incoming) {
-    const g = grouped.get(e.token) || { token: e.token, value: 0n, block: e.block, from: e.from, tx: e.tx };
-    g.value += e.value; if (e.block < g.block) { g.block = e.block; g.from = e.from; g.tx = e.tx; }
-    grouped.set(e.token, g);
-  }
-  const groups = [...grouped.values()].sort((a, b) => b.block - a.block);
-  const truncated = groups.length > 8 || events.length >= 1500;
-  const slice = groups.slice(0, 8);
-  const buys = await pool(slice, 3, async g => {
-    const launch = byToken.get(g.token);
-    const [dec, code, detail] = await Promise.all([
-      decimalsOf(g.token),
-      bscRpc("eth_getCode", [g.from, "latest"], 5000).then(c => c && c !== "0x").catch(() => null),
-      launch ? readLaunch(launch, { head, headTime, blockTime }).catch(e => ({ error: String(e.message || e).slice(0, 120), buyers: [], ran: null, multiple: null })) : Promise.resolve(null),
-    ]);
-    const launchBlock = launch?.block ?? null;
-    let early = null, earlyBasis = null;
-    if (launchBlock != null && g.block > launchBlock + WINDOW) { early = false; }
-    else if (launchBlock != null && g.block >= launchBlock && detail && !detail.error) {
-      const row = (detail.buyers || []).find(b => b.wallet === wallet);
-      early = row ? row.early && !row.excluded : null;
-      earlyBasis = early ? "first_blocks" : null;
-    }
-    const ran = detail ? detail.ran : null;
-    const sec = headTime - (head - g.block) * blockTime;
-    const via = ROUTERS.has(g.from) || FOURMEME.has(g.from) || (launch?.pair && g.from === launch.pair) ? "router_or_launchpad" : code === true ? "contract" : code === false ? "wallet" : "unknown";
-    return {
-      token: g.token, symbol: detail?.symbol || null, time: Number.isFinite(sec) ? new Date(sec * 1000).toISOString() : null, timeApprox: true,
-      size: formatUnits(g.value, dec), sizeRaw: g.value.toString(), decimals: dec,
-      via, early, earlyBasis, status: ran === true ? "ran" : ran === false ? "did_not_run" : "unknown",
-      multiple: detail?.multiple ?? null, stillTrading: detail?.liquidityUsd == null || detail?.txnsH1 == null ? null : detail.liquidityUsd >= MIN_LIQ_USD && detail.txnsH1 > 0,
-      liquidityUsd: detail?.liquidityUsd ?? null, priceError: detail?.priceError || detail?.error || null,
-    };
-  });
-  const shown = buys.filter(b => b && b.via !== "wallet");
-  if (buys.some(b => b?.priceError)) errors.push("one or more prices could not be read; status is unknown for those, not guessed");
-  if (stopped && oldest > floor) errors.push("stopped early so the call stays inside the time limit; lookback_hours is only the span actually read");
-  const partial = failed || stopped || truncated || errors.length > 0;
-  return {
-    type: "bsc-smart-money-wallet", chain: "bsc", wallet, generatedAt: new Date().toISOString(),
-    lookback_hours: lookbackHours,
-    lookback_note: `Free public BNB Chain RPC cannot filter every token transfer to a wallet, so this reads receipts of ${watched.length} launches about ${lookbackHours} hours back. The usual cap is about ${LOOKBACK_CAP_HOURS} hours. Plain wallet-to-wallet transfers are left out.`,
-    partial, errors, count: shown.length,
-    buys: shown,
-    coverage: { launchesChecked: watched.length, receipts: incoming.length, tokens: groups.length, listed: shown.length, omittedWalletTransfers: buys.filter(b => b?.via === "wallet").length, truncated, note: "early is true only when this wallet is among the first 20 buyers in the launch block and the next 10 blocks, and not a bundled sniper, router or deployer. size is tokens received, not USD." },
-    disclaimer: DISCLAIMER,
-  };
 }
