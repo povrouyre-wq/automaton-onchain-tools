@@ -53,6 +53,48 @@ export function verdict({ clusterPct, holdPct, devInCluster, bundledTxs }) {
   return { riskLevel: score >= 5 ? "high" : score >= 2 ? "medium" : "low", riskScore: score, reasons };
 }
 
+// Early buyers in the launch window, tagged the same way the bundle check tags them.
+// Coordinated snipers (bundle txs, dev hand-outs, dev-signed buys, shared funders) are a subset; a solo early buy is not.
+export function indexEarlyWallets(ev, { venues, devs, token, launchBlock, window = WINDOW }) {
+  const L = launchBlock, W = L + window, dev = devs instanceof Set ? devs : new Set(devs || []);
+  const isBuy = e => venues.has(e.from) && !venues.has(e.to) && e.to !== ZERO && e.to !== DEAD && e.to !== token;
+  const buys = ev.filter(e => isBuy(e) && e.block >= L && e.block <= W);
+  const handouts = ev.filter(e => dev.has(e.from) && !venues.has(e.to) && !dev.has(e.to) && e.to !== DEAD && e.to !== ZERO && e.to !== token && e.block <= W);
+  const W8 = new Map();
+  const add = (a, v, blk, how) => { const w = W8.get(a) || { address: a, received: 0n, firstBlock: blk, how: new Set(), txs: new Set() }; w.received += v; w.firstBlock = Math.min(w.firstBlock, blk); w.how.add(how); W8.set(a, w); return w; };
+  for (const e of buys) add(e.to, e.value, e.block, e.block === L ? "bought in launch block" : `bought in block +${e.block - L}`).txs.add(e.tx);
+  for (const e of handouts) add(e.to, e.value, e.block, "got tokens straight from the dev").txs.add(e.tx);
+  const byTx = new Map(); for (const e of buys) { const s = byTx.get(e.tx) || new Set(); s.add(e.to); byTx.set(e.tx, s); }
+  const bundledTx = [...byTx].filter(([, s]) => s.size >= 2);
+  for (const [, s] of bundledTx) for (const a of s) W8.get(a)?.how.add("bundled with other buyers in one tx");
+  const all = [...W8.values()].sort((a, b) => a.firstBlock - b.firstBlock || Number(b.received - a.received));
+  return { all, bundledTx, buys, handouts };
+}
+
+// Same funding tags the bundle check writes after it reads pre-launch BNB transfers.
+export function applyFundingTags(wallets, funder, devs) {
+  const dev = devs instanceof Set ? devs : new Set(devs || []);
+  const fundersOf = w => new Set([...(funder.get(w.address) || []), ...[...(w.signers || [])].flatMap(s => [...(funder.get(s) || [])])]);
+  const devFunders = new Set(dev.size ? [...dev].flatMap(d => [...(funder.get(d) || [])]) : []);
+  const fcount = new Map(); for (const w of wallets) for (const f of fundersOf(w)) fcount.set(f, (fcount.get(f) || 0) + 1);
+  for (const w of wallets) for (const f of fundersOf(w)) {
+    if (dev.has(f)) w.how.add("funded by the dev");
+    else if (devFunders.has(f)) w.how.add("same funder as the dev");
+    else if ((fcount.get(f) || 0) >= 2) w.how.add("same funder as another early buyer");
+    w.funders = [...fundersOf(w)];
+  }
+}
+
+// Bundle-check cluster, minus "bought in the launch block" by itself. Launch-block buys are the early set the smart-money feed ranks;
+// this drops the coordinated subset (bundled txs, dev hand-outs, dev-signed, shared or dev funders) and the deployer.
+export function isCoordinatedSniper(how, { isDev = false } = {}) {
+  if (isDev) return true;
+  for (const h of how || []) if (/bundled|straight from the dev|signed by the dev|funded by the dev|same funder/.test(h)) return true;
+  return false;
+}
+
+export { call as bscCall, rpc as bscRpc, blockAt as bscBlockAt };
+
 export async function bscBundles(tokenIn) {
   const token = lc(tokenIn), started = Date.now(), notes = [];
   const [code, head0, gp] = await Promise.all([rpc("eth_getCode", [token, "latest"]), rpc("eth_blockNumber", []), geckoPools(token)]);
@@ -105,15 +147,8 @@ export async function bscBundles(tokenIn) {
   const L = firstBuy.block, W = L + WINDOW;
   if ((scanTo ?? 0) < W && W <= head) { try { const l = await getLogs(token, (scanTo ?? L) + 1, W); for (const x of l) ev.push({ block: Number(BigInt(x.blockNumber)), tx: x.transactionHash, from: lc(addr(x.topics[1])), to: lc(addr(x.topics[2])), value: BigInt(x.data === "0x" ? 0 : x.data) }); } catch (e) { notes.push("could not read the full first-blocks window: " + e.message.slice(0, 80)); } }
   // 4) early buyers (launch block .. +WINDOW) and pre-launch dev hand-outs.
-  const buys = ev.filter(e => isBuy(e) && e.block >= L && e.block <= W);
-  const handouts = ev.filter(e => devs.has(e.from) && !venues.has(e.to) && !devs.has(e.to) && e.to !== DEAD && e.to !== ZERO && e.to !== token && e.block <= W);
-  const W8 = new Map(); const add = (a, v, blk, how) => { const w = W8.get(a) || { address: a, received: 0n, firstBlock: blk, how: new Set(), txs: new Set() }; w.received += v; w.firstBlock = Math.min(w.firstBlock, blk); w.how.add(how); W8.set(a, w); return w; };
-  for (const e of buys) add(e.to, e.value, e.block, e.block === L ? "bought in launch block" : `bought in block +${e.block - L}`).txs.add(e.tx);
-  for (const e of handouts) add(e.to, e.value, e.block, "got tokens straight from the dev").txs.add(e.tx);
-  const byTx = new Map(); for (const e of buys) { const s = byTx.get(e.tx) || new Set(); s.add(e.to); byTx.set(e.tx, s); }
-  const bundledTx = [...byTx].filter(([, s]) => s.size >= 2);
-  for (const [, s] of bundledTx) for (const a of s) W8.get(a)?.how.add("bundled with other buyers in one tx");
-  const all = [...W8.values()].sort((a, b) => a.firstBlock - b.firstBlock || Number(b.received - a.received)); for (const w of all) w.signers = new Set();
+  const { all, bundledTx } = indexEarlyWallets(ev, { venues, devs, token, launchBlock: L });
+  for (const w of all) w.signers = new Set();
   const truncatedBuyers = all.length > MAX_BUYERS; const wallets = [...all].sort((a, b) => Number(b.received - a.received)).slice(0, MAX_BUYERS); // biggest early wallets get the signer + funding checks
   // 5) signer of each buy tx (a buyer that is a bundler-paid recipient has a different signer).
   const txs = [...new Set(wallets.flatMap(w => [...w.txs]))];
@@ -125,10 +160,7 @@ export async function bscBundles(tokenIn) {
   const blocks = []; for (let b = L; b >= fundStart; b--) blocks.push(b);
   await pool(blocks, 6, async b => { if (Date.now() - started > 22000) return; try { const blk = await rpc("eth_getBlockByNumber", [hex(b), true], 8000); fundOk++; fundFrom = Math.min(fundFrom, b);
     for (const t of blk.transactions || []) if (t.to && watch.has(lc(t.to)) && BigInt(t.value) > 0n && lc(t.from) !== lc(t.to)) { const k = lc(t.to); const s = funder.get(k) || new Set(); s.add(lc(t.from)); funder.set(k, s); } } catch {} });
-  const fundersOf = w => new Set([...(funder.get(w.address) || []), ...[...w.signers].flatMap(s => [...(funder.get(s) || [])])]);
-  const devFunders = new Set(devs.size ? [...devs].flatMap(d => [...(funder.get(d) || [])]) : []);
-  const fcount = new Map(); for (const w of wallets) for (const f of fundersOf(w)) fcount.set(f, (fcount.get(f) || 0) + 1);
-  for (const w of wallets) for (const f of fundersOf(w)) { if (devs.has(f)) w.how.add("funded by the dev"); else if (devFunders.has(f)) w.how.add("same funder as the dev"); else if (fcount.get(f) >= 2) w.how.add("same funder as another early buyer"); w.funders = [...fundersOf(w)]; }
+  applyFundingTags(wallets, funder, devs);
   // 7) cluster: launch-block buyers + bundled + dev hand-outs + dev-funded/shared-funder wallets + the dev itself if it bought.
   const linked = /launch block|bundled|straight from the dev|signed by the dev|funded by the dev|same funder/;
   const cluster = all.filter(w => [...w.how].some(h => linked.test(h)));

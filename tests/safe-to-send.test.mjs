@@ -89,9 +89,9 @@ for (const c of CHAINS8) test(`402 for /v1/${c}/safe-to-send: $0.005 USDC on Bas
   else assert.equal((await fetch(`${BASE}/v1/solana/safe-to-send?to=${evm}`)).status, 400);
 });
 
-test("openapi 1.15.0 lists the route, and /check offers it", async () => {
+test("openapi 1.16.0 lists the route, and /check offers it", async () => {
   const o = await (await fetch(BASE + "/openapi.json")).json();
-  assert.equal(o.info.version, "1.15.0");
+  assert.equal(o.info.version, "1.16.0");
   const op = o.paths["/v1/base/safe-to-send"].get;
   assert.equal(op.operationId, "base_safe_to_send");
   assert.match(op.description, /^Use when: /);
