@@ -64,7 +64,7 @@ for (const c of ["base", "ethereum", "bsc"]) test(`402 for /v1/${c}/verdict: $0.
   assert.equal((await fetch(`${BASE}/v1/${c}/verdict?token=0x123`)).headers.get("payment-required"), null);
   const o = await (await fetch(BASE + "/openapi.json")).json();
   assert.equal(o.paths[`/v1/${c}/verdict`].get.operationId, `${c}_token_verdict`);
-  assert.equal(o.info.version, "1.15.0");
+  assert.equal(o.info.version, "1.16.0");
   assert.match(o.paths[`/v1/${c}/verdict`].get.description, /^Use when: /);
   const w = await (await fetch(BASE + "/.well-known/x402")).json();
   assert.ok(w.resources.some(u => u.endsWith(`/v1/${c}/verdict`)));

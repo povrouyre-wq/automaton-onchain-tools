@@ -22,6 +22,7 @@ import { bscBundles } from "./bundles.js";
 import { honeypotCheck, HONEYPOT_CHAINS } from "./honeypot.js";
 import { tokenVerdict } from "./verdict.js";
 import { safeToSend } from "./safe-to-send.js";
+import { bscSmartMoney, bscSmartMoneyWallet } from "./smart-money.js";
 import { CHAINS, CORE_CHAINS, LOOKUP_ONLY_CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
 
@@ -215,6 +216,30 @@ ROUTES.push(
     name: "Solana / pump.fun New Token Launch Feed with Risk Flags", pdesc: LIMIT.desc, example: "10", tag: "launches", tags: ["launches", "new-tokens", "solana", "pumpfun", "security", "crypto"], chainLabel: "Solana",
     desc: `Newest token launches on Solana (mostly pump.fun curves, plus PumpSwap/Meteora), up to 20, each with our Solana token check at request time: mint/freeze authority, mutable metadata, Token-2022 extensions, holder concentration excluding curve/pools, curve progress, and a flag for copycats of major tokens (USDC, SOL, USDT...) that aren't the real mint. Plus age, FDV, 1h buys/sells. Data: GeckoTerminal. Heuristics, not an audit.`, out: { ...feedOut, launches: [{ chain: "solana", token: { address: "...pump", symbol: "..." }, pool: { dex: "pump-fun", ageMinutes: 1, fdvUsd: 2866 }, risk: { riskLevel: "low", mintAuthorityActive: false, freezeAuthorityActive: false, metadataMutable: false, pumpfun: { status: "on-curve", progressPct: 2.8 }, top10HoldersPct: 2.2, flags: [] } }] } });
 
+// BNB smart money ($0.02): repeat early buyers of four.meme / PancakeSwap launches that actually ran. Free RPC lookback is about 2 days.
+const PRICE_SMART = process.env.PRICE_SMART || "$0.02";
+const SM_HITS = { name: "minHits", re: /^([1-9]|10)$/, pattern: "^([1-9]|10)$", desc: "minimum early hits (launches that ran), 1-10 (default 2)", example: "2" };
+const smOut = { type: "bsc-smart-money", chain: "bsc", lookback_hours: 36.5, partial: true, count: 1, filters: { limit: 10, minHits: 2, runMultiple: 2, earlyBlocks: 10, firstBuyers: 20 },
+  lookback_note: "Free public BNB Chain RPC answered logs about 36.5 hours back on this call. The usual cap is about 48 hours.",
+  wallets: [{ wallet: "0x1111111111111111111111111111111111111111", earlyHits: 2, earlyEntries: 3, hitRate: 0.6667, lastSeen: "2026-11-13T18:00:00.000Z",
+    sampleTokens: [{ token: "0x2222222222222222222222222222222222222222", symbol: "PECK", entryTime: "2026-11-13T12:00:00.000Z", multiple: 3.4, ran: true }] }],
+  disclaimer: "Heuristic. Not financial advice." };
+ROUTES.push(
+  { key: "bsc_smart_money", path: "/v1/bsc/smart-money", param: "limit", optional: true, re: LIMIT.re, pattern: LIMIT.pattern, price: PRICE_SMART, deadline: 50000, fn: (v, q) => bscSmartMoney({ limit: v, minHits: q.minHits }),
+    name: "BNB Chain Smart Money (early buyers of launches that ran)", pdesc: LIMIT.desc, example: "10", tag: "smart-money", chainLabel: "BNB Chain", extra: SM_HITS,
+    tags: ["smart-money", "bsc", "bnb", "fourmeme", "pancakeswap", "launches"],
+    cardDesc: "Ranks BNB wallets that repeatedly bought in the first blocks of four.meme and PancakeSwap launches that later reached about 2x and are still trading. Returns early hits, hit rate, sample tokens with entry time and an approximate multiple, and last seen. Routers, deployers and bundled sniper clusters are left out. Free BSC logs only cover about 2 days, and lookback_hours says how far this answer reached.",
+    desc: "Ranks wallets that bought in the first blocks and first buyers of four.meme and PancakeSwap launches that later reached about 2x and are still trading. Returns early hits, hit rate, sample tokens with entry time and an approximate multiple, and last seen. Drops routers, deployers and bundled snipers. Free BSC logs only go back about 2 days; lookback_hours is the span read. Cached. Partial if a source fails. Not advice.",
+    out: smOut },
+  { key: "bsc_smart_money_wallet", path: "/v1/bsc/smart-money/:wallet", pathParam: true, param: "wallet", re: ADDR, pattern: AP, price: PRICE_SMART, deadline: 50000, fn: v => bscSmartMoneyWallet(v),
+    name: "BNB Chain Smart Money Wallet (recent buys)", pdesc: "BNB Chain wallet address", example: EX.bsc.wallet, tag: "smart-money", chainLabel: "BNB Chain",
+    tags: ["smart-money", "bsc", "bnb", "wallet", "launches"],
+    cardDesc: "What one BNB wallet bought in the free-RPC window (about 2 days): token, time, size, whether the buy was in the first blocks of a four.meme or PancakeSwap launch, and whether that launch ran. Missing prices stay null.",
+    desc: "Lists recent BNB Chain token receipts from a pool, router or other contract: token, time, size, whether the buy was in the first blocks of a four.meme or PancakeSwap launch, and whether that launch ran and is still trading. Same free-RPC window of about 2 days, reported as lookback_hours. Cached. Unknown prices or logs stay null and partial. Not advice.",
+    out: { type: "bsc-smart-money-wallet", chain: "bsc", wallet: EX.bsc.wallet, lookback_hours: 30.2, partial: false, count: 1,
+      buys: [{ token: "0x2222222222222222222222222222222222222222", symbol: "PECK", time: "2026-11-13T12:00:00.000Z", size: "1000000", early: true, earlyBasis: "first_blocks", status: "ran", multiple: 3.4, stillTrading: true }],
+      disclaimer: "Heuristic. Not financial advice." } });
+
 // "Use when" lead line: agents pick tools by reading descriptions, so each one opens with the exact question it answers.
 const UW = (r) => { const N = r.chainLabel || (r.key.split("_")[0] in CHAINS ? CHAINS[r.key.split("_")[0]].name : ""); const k = r.key.replace(/^[a-z]+_(?=(tx_explain|token_approvals|address_inspect|contract_risk|honeypot_check|token_verdict|safe_to_send)$)/, "");
   return ({ tx_explain: `what did this ${N} transaction do?`, token_approvals: `which token approvals on this ${N} wallet should I revoke?`, address_inspect: `what is this ${N} address (wallet, contract, proxy, token)?`,
@@ -226,7 +251,9 @@ const UW = (r) => { const N = r.chainLabel || (r.key.split("_")[0] in CHAINS ? C
     token_report: "should I trust this token contract (owner, supply, flags)?", token_deep_scan: "is this token a honeypot or rug (sell sim, liquidity, LP lock, holders)?",
     solana_token_check: "is this Solana or pump.fun token a rug (authorities, holders)?", solana_address_lookup: "what is this Solana address and what does it hold?",
     solana_token_delegates: "which token delegates on this Solana wallet should I revoke?", approval_sweep_all_chains: "which approvals on this wallet should I revoke, on every EVM chain?",
-    bsc_bundle_sniper_check: "was this BNB token bundled or sniped at launch?" })[k] || (r.path.startsWith("/v1/launches") || /launch/.test(r.key) ? `what tokens just launched on ${N || "these chains"}, and are they risky?` : null); };
+    bsc_bundle_sniper_check: "was this BNB token bundled or sniped at launch?",
+    bsc_smart_money: "which BNB wallets keep buying early into launches that then run?",
+    bsc_smart_money_wallet: "what did this BNB wallet buy recently, and was it early?" })[k] || (r.path.startsWith("/v1/launches") || /launch/.test(r.key) ? `what tokens just launched on ${N || "these chains"}, and are they risky?` : null); };
 for (const r of ROUTES) { const q = UW(r); if (!q) { console.error("no use-when for", r.key); continue; } r.desc = `Use when: ${q} ${r.desc}`; }
 // CDP facilitator /verify rejects any paymentPayload whose resource.description is over 500 chars (x402 issue #2832). Keep every desc <= 500.
 for (const r of ROUTES) if (r.desc.length > 500) console.error(`desc too long (${r.desc.length}) for ${r.path}: CDP will reject payments`);
@@ -253,8 +280,9 @@ server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it
   const tc = ctx.transportContext || {}; const path = tc.request?.path || tc.adapter?.getPath?.() || tc.path || "";
   const r = ROUTES.find(r => path === r.path); if (r) p.resource = { url: ORIGIN + r.path, description: r.desc, mimeType: "application/json" };
 });
+const routeValue = (r, req) => r.pathParam ? req.params[r.param] : req.query[r.param];
 const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"], lookupOnlyChains: LOOKUP_ONLY_CHAINS,
-  endpoints: ROUTES.map(r => ({ url: `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
+  endpoints: ROUTES.map(r => ({ url: r.pathParam ? `${ORIGIN}${r.path.replace(/:([A-Za-z0-9_]+)/g, "<$1>")}` : `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
 app.get("/health", health); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL, PRICE_SWEEP, PRICE_BUNDLE, PRICE_HONEYPOT, PRICE_VERDICT, PRICE_SAFE });
 
 // Validate before charging: bare paymentless request -> 402 (discovery probes); bad input -> free 400.
@@ -262,20 +290,24 @@ const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
 const routeExtras = r => [r.extra, ...(r.extras || [])].filter(Boolean);
 const extraOk = (ex, v) => typeof v === "string" && ex.re.test(v) && (!ex.valid || ex.valid(v));
 for (const r of ROUTES) app.get(r.path, (req, res, next) => {
-  const v = req.query[r.param];
+  const v = routeValue(r, req);
   for (const ex of routeExtras(r)) if (req.query[ex.name] !== undefined && !extraOk(ex, req.query[ex.name])) return res.status(400).json({ error: `query param ${ex.name} must match ${ex.pattern}` });
   if (v === undefined && (!hasPay(req) || r.optional)) return next();
-  if (typeof v !== "string" || !r.re.test(v) || (r.valid && !r.valid(v))) return res.status(400).json({ error: `query param ${r.param} must match ${r.pattern}` });
+  if (typeof v !== "string" || !r.re.test(v) || (r.valid && !r.valid(v))) return res.status(400).json({ error: `${r.pathParam ? "path" : "query"} param ${r.param} must match ${r.pattern}` });
   if (r.param === "url") { try { const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : "https://" + v); if (!["http:", "https:"].includes(u.protocol)) throw 0; } catch { return res.status(400).json({ error: "url must be an http(s) URL or hostname" }); } }
   next();
 });
 const prop = (pattern, desc, maxLen) => ({ type: "string", pattern, ...(maxLen ? { maxLength: maxLen } : {}), description: desc });
 const routeCfg = {};
-for (const r of ROUTES) { const extras = routeExtras(r); routeCfg["GET " + r.path] = {
+for (const r of ROUTES) { const extras = routeExtras(r);
+  const discovery = r.pathParam
+    ? declareDiscoveryExtension({ method: "GET", input: {}, inputSchema: { properties: {} }, pathParams: { [r.param]: r.example }, pathParamsSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen) }, required: [r.param] }, output: { example: r.out } })
+    : declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...Object.fromEntries(extras.filter(e => e.example != null).map(e => [e.name, e.example])) },
+      inputSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen), ...Object.fromEntries(extras.map(e => [e.name, prop(e.pattern, e.desc, e.maxLen)])) }, required: r.optional ? [] : [r.param] }, output: { example: r.out } });
+  routeCfg["GET " + r.path] = {
   accepts: [{ scheme: "exact", price: r.price, network: NETWORK, payTo: PAY_TO }], description: r.desc, mimeType: "application/json",
   resource: ORIGIN + r.path, serviceName: r.name, tags: r.tags || (r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"]),
-  extensions: { ...builderExt, ...declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...Object.fromEntries(extras.filter(e => e.example != null).map(e => [e.name, e.example])) },
-    inputSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen), ...Object.fromEntries(extras.map(e => [e.name, prop(e.pattern, e.desc, e.maxLen)])) }, required: r.optional ? [] : [r.param] }, output: { example: r.out } }) } }; }
+  extensions: { ...builderExt, ...discovery } }; }
 // Mirror the PAYMENT-REQUIRED header into the 402 body (it is otherwise "{}") so indexers and clients that read the body (x402 v1 style) see the same accepts[].
 app.use((req, res, next) => { if (!req.path.startsWith("/v1/")) return next(); const end = res.end;
   res.end = function (chunk, ...rest) { try { if (res.statusCode === 402 && !res.headersSent && (!chunk || String(chunk) === "{}")) { const h = res.getHeader("payment-required");
@@ -289,7 +321,7 @@ app.use((req, res, next) => { if (Date.now() - bxAt > 6 * 3600e3 && bxQ()) { bxA
     if (l) bxQ().token = l.token.address; }).catch(() => { bxAt = Date.now() - 5.5 * 3600e3; }); } next(); });
 app.use(paymentMiddleware(routeCfg, server));
 for (const r of ROUTES) app.get(r.path, async (req, res) => {
-  try { res.json(await withDeadline(r.fn(req.query[r.param], req.query), r.deadline)); }
+  try { res.json(await withDeadline(r.fn(routeValue(r, req), req.query), r.deadline)); }
   catch (e) { res.status(e.status || 404).json({ error: e.status === 400 ? e.message : e.status === 504 ? "upstream timeout, not charged" : "not found or upstream error", detail: String(e.shortMessage || e.message).slice(0, 300) }); }
 });
 
@@ -300,13 +332,13 @@ app.get("/free/launches", async (req, res) => {
   catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
 });
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.15.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.02 quick token verdict for those three chains (SAFE / CAUTION / AVOID, bundling sellability, tax, owner powers, LP burn/lock and holder concentration), a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs), plus a $0.005 safe-to-send pre-transfer recipient check on all 8 chains (safe / caution / danger: address-poisoning lookalikes, free scam/drainer flags, contract token handling, fresh empty addresses; every signal is a heuristic).",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.16.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.02 quick token verdict for those three chains (SAFE / CAUTION / AVOID, bundling sellability, tax, owner powers, LP burn/lock and holder concentration), a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), a $0.02 BNB Chain smart-money feed (wallets that repeatedly bought early into four.meme and PancakeSwap launches that then ran, plus one wallet's recent buys; free public RPC logs only, about 2 days, reported as lookback_hours), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs), plus a $0.005 safe-to-send pre-transfer recipient check on all 8 chains (safe / caution / danger: address-poisoning lookalikes, free scam/drainer flags, contract token handling, fresh empty addresses; every signal is a heuristic).",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
-  paths: Object.fromEntries(ROUTES.map(r => [r.path, { get: { operationId: r.key, summary: r.name, description: r.desc,
+  paths: Object.fromEntries(ROUTES.map(r => [r.path.replace(/:([A-Za-z0-9_]+)/g, "{$1}"), { get: { operationId: r.key, summary: r.name, description: r.desc,
     "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: r.price.replace("$", "") }, protocols: [{ x402: {} }] },
-    parameters: [{ name: r.param, in: "query", required: !r.optional, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }, ...routeExtras(r).map(e => ({ name: e.name, in: "query", required: false, description: e.desc, schema: { type: "string", pattern: e.pattern } }))],
+    parameters: [...(r.pathParam ? [{ name: r.param, in: "path", required: true, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }] : [{ name: r.param, in: "query", required: !r.optional, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }]), ...routeExtras(r).map(e => ({ name: e.name, in: "query", required: false, description: e.desc, schema: { type: "string", pattern: e.pattern } }))],
     responses: { 200: { description: "OK", content: { "application/json": { schema: { type: "object" }, example: r.out } } }, 400: { description: "Invalid input (no charge)" }, 402: { description: "Payment Required" } } } }])) }));
 app.get("/.well-known/mcp-registry-auth", (_, res) => res.type("text/plain").send("v=MCPv1; k=ed25519; p=Gkkq+F+PxBJofd16J+xJpg6E+nXM7MWO29cD3+IKe0U="));
 app.get("/.well-known/x402", (_, res) => res.json({ version: 1, resources: ROUTES.map(r => ORIGIN + r.path) }));
@@ -321,7 +353,7 @@ async function buildMcp() {
     resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
     extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen), ...Object.fromEntries(extras.map(e => [e.name, prop(e.pattern, e.desc, e.maxLen)])) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...Object.fromEntries(extras.filter(e => e.example != null).map(e => [e.name, e.example])) } }) } }); }
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.15.0" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.16.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
     for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
       m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...Object.fromEntries(routeExtras(r).map(e => [e.name, z.string().regex(e.re).optional()])) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a), r.deadline)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
