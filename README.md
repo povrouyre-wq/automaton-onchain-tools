@@ -2,7 +2,7 @@
 
 [![M8ven Score](https://m8ven.ai/badge/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?v=0e560c4d737408fa245aa4e54cf10936)](https://m8ven.ai/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?s=readme)
 
-Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.005 to $0.02 per call in **USDC on Base** (`eip155:8453`). There's no signup and no API key. An MCP server is included.
+Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.005 to $0.02 per call, or $0.05 for a batch of up to 20 addresses, in **USDC on Base** (`eip155:8453`). There's no signup and no API key. An MCP server is included.
 
 **Live:** https://automaton-tx-explainer.vercel.app · [OpenAPI](https://automaton-tx-explainer.vercel.app/openapi.json) · [llms.txt](https://automaton-tx-explainer.vercel.app/llms.txt) · [x402 discovery](https://automaton-tx-explainer.vercel.app/.well-known/x402)
 
@@ -10,7 +10,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 
 ## Endpoints
 
-`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). Safe to send also accepts `solana`. With the Solana token check, the Solana address and delegate lookups, the launch feeds, the three quick-verdict routes, the eight safe-to-send routes and the two BNB smart-money routes that gives 61 paid tools.
+`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). Safe to send also accepts `solana`. With the Solana token check, the Solana address and delegate lookups, the launch feeds, the three quick-verdict routes, the eight safe-to-send routes, the two BNB smart-money routes, the seven approval batch routes and the eight safe-to-send batch routes that gives 76 paid tools.
 
 **Arbitrum, Optimism, Polygon and Avalanche** get the four per-chain lookups only (tx, approvals, address, contract-risk), all at **$0.005**, and their address and contract-risk responses carry the copycat-token flag (see below). They are not part of the gas snapshot, portfolio, wallet/token reports, deep scan or launch feeds, which stay on Base, Ethereum and BNB Chain.
 
@@ -18,6 +18,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 |---|---|---|---|
 | Tx Explainer | `GET /v1/{chain}/tx?hash=0x…` | $0.01 ($0.005 on the four lookup-only chains) | Status, fee, decoded method + args, ERC-20 transfers |
 | Token Approval Check | `GET /v1/{chain}/approvals?address=0x…` | $0.005 | Allowances of major tokens to common spenders; flags unlimited |
+| Token Approval Batch | `GET /v1/{chain}/approvals/batch?addresses=0x…,0x…` | $0.05 | Same approval check for 1 to 20 wallets on one chain. One result per address, in request order. A bad address on one wallet does not fail the batch. Duplicates are checked once. Not Solana. |
 | Address Inspector | `GET /v1/{chain}/address?address=0x…` | $0.005 | EOA / contract / EIP-7702, balance, proxy impl, ERC-20 metadata |
 | Contract Risk Heuristics | `GET /v1/{chain}/contract-risk?address=0x…` | $0.01 ($0.005 on the four lookup-only chains) | Sourcify verification, proxy/admin, owner type, mint/pause/blacklist/fee selectors |
 | URL Safety Check | `GET /v1/url-safety?url=…` | $0.005 | Phishing blocklists, domain age (RDAP), punycode/lookalikes, HTTPS |
@@ -34,6 +35,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 | **Honeypot Check (Base, Ethereum, BNB Chain)** | `GET /v1/{base\|ethereum\|bsc}/honeypot?token=0x...` | $0.01 | Can you actually sell it? Simulates a small buy and a sell back into the token's deepest WETH/WBNB pool (Uniswap V2/V3, Aerodrome, SushiSwap V2, PancakeSwap V2/V3) with one `eth_call` + state override, so nothing trades. Returns `sellable`, `buyTaxPct`, `sellTaxPct`, the pool used, a verdict (sellable, taxed, high tax, honeypot) and coverage notes. No pool, not a token or an inconclusive simulation is not charged. |
 | **Quick Token Verdict (Base, Ethereum, BNB Chain)** | `GET /v1/{base\|ethereum\|bsc}/verdict?token=0x...` | $0.02 | SAFE, CAUTION or AVOID in one call, plus the raw flags: sellable, buy/sell tax, owner renounced, proxy, mint/pause/blacklist/fee, LP burned or locked %, top 10 holders excluding pools and burn, and a copycat-of-a-major-token flag. Same simulation and reads as the honeypot check, contract-risk scan and deep-scan holder/LP code. No pool, not a token or an inconclusive simulation is not charged. MCP tools: `base_token_verdict`, `ethereum_token_verdict`, `bsc_token_verdict`. |
 | **Safe to Send? (all 8 chains)** | `GET /v1/{chain}/safe-to-send?to=…&from=…&token=…` | $0.005 | Pre-transfer check of the recipient. Verdict is `safe`, `caution` or `danger`. `to` is required. `from` (optional) turns on the address-poisoning lookalike check against that sender's recent counterparties. `token` (optional) is the token the agent intends to send. Heuristics only: lookalike prefix/suffix, dust-only spam history, free GoPlus scam/drainer flags on EVM, whether a contract looks unable to handle the token, and a fresh empty address (no history, zero native balance). Solana is included; it has no free address-flag source here and the response says so. Bad input is a free 400. |
+| **Safe to Send Batch (all 8 chains)** | `GET /v1/{chain}/safe-to-send/batch?addresses=…,…&from=…&token=…` | $0.05 | Same pre-transfer check for 1 to 20 recipients on one chain, including Solana. Optional `from` and `token` apply to every recipient. One result per address, in request order. A failure or timeout is marked on that item. |
 | **BNB Chain Bundle + Sniper Check** | `GET /v1/bsc/bundles?token=0x...` | $0.01 | For a four.meme or PancakeSwap launch: finds the launch block, reads the next 10 blocks and clusters launch-block buyers, bundled txs, dev hand-outs and wallets BNB-funded by the dev or a shared wallet in the 40 blocks before launch. Returns % of supply grabbed, % still held, dev-in-cluster, risk verdict and an honest `coverage` field (free public RPC: 50k-block log chunks, recent history only). Failed/timed-out calls are not charged. |
 | **BNB Chain Smart Money** | `GET /v1/bsc/smart-money?limit=10&minHits=2` | $0.02 | Wallets that repeatedly bought in the first blocks (first 20 buyers) of four.meme and PancakeSwap v2/v3 launches that then ran: about 2x from the first public candle, liquidity still there, and still trading. Returns early hits, hit rate, sample tokens with entry time and an approximate multiple, and last seen. Routers, deployers and bundled sniper clusters are excluded with the bundle-check rules. `limit` is 1–20 (default 10). `minHits` is 1–10 (default 2). |
 | **BNB Chain Smart Money Wallet** | `GET /v1/bsc/smart-money/{wallet}` | $0.02 | What that wallet received recently from a pool, router or other contract: token, time, size, whether it was in the first blocks, and whether the launch ran. |
@@ -105,6 +107,14 @@ The sell test is the honeypot checker. Owner powers are `contractRisk`. Holders 
 
 `safe` means none of those positive signals fired on the checks that completed. Items that could not be loaded stay in `couldNotDetermine` and do not get invented into a danger label. Bad input is a free 400. A failed recipient read is a 502 and is not charged.
 
+### Batch approvals and safe-to-send
+
+`GET /v1/{chain}/approvals/batch?addresses=0x…,0x…` and `GET /v1/{chain}/safe-to-send/batch?addresses=…,…` are $0.05 each (`PRICE_BATCH`). Each call takes 1 to 20 addresses on one chain. Approvals batch covers the same seven EVM chains as the single approvals route. Safe-to-send batch covers those chains plus Solana. The list is comma-separated. Spaces around commas are ignored. Repeated addresses are checked once, and results come back in first-seen order.
+
+Each item is `{ address, status, result }` when the single-wallet check succeeded (`result` is that route's JSON), `{ address, status: "error", error }` when that address failed, or `{ address, status: "partial", error }` when that lookup timed out or the batch time budget ran out. The HTTP call still returns 200. `partial: true` on the body means at least one item timed out. A malformed address, an empty list, or more than 20 addresses is a free 400 before the 402, so a bad list is not charged. Lookups run a few at a time so a full batch stays inside the function time limit.
+
+MCP tools follow the route keys, for example `base_token_approvals_batch` and `solana_safe_to_send_batch`.
+
 After deploy, index the three routes on CDP Bazaar with one paid call each ($0.06 total, settled to the service wallet):
 
 ```bash
@@ -161,7 +171,7 @@ npm install
 PAY_TO=0xYourAddress node server.js   # Base Sepolia + x402.org facilitator by default
 ```
 
-Environment variables: `SOLANA_RPC`, `PAY_TO`, `X402_NETWORK` (`eip155:8453` for mainnet), `FACILITATOR_URL` (`cdp` uses `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`), `PRICE`, `PRICE_SMALL`, `PRICE_SAFE` (default `$0.005`), `PRICE_VERDICT` (default `$0.02`), `PUBLIC_ORIGIN`, `BASE_RPC`, `ETH_RPC`, `BSC_RPC`. Deploys to Vercel as-is (`api/index.js`). A merge to `main` is what Vercel deploys.
+Environment variables: `SOLANA_RPC`, `PAY_TO`, `X402_NETWORK` (`eip155:8453` for mainnet), `FACILITATOR_URL` (`cdp` uses `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`), `PRICE`, `PRICE_SMALL`, `PRICE_SAFE` (default `$0.005`), `PRICE_VERDICT` (default `$0.02`), `PRICE_BATCH` (default `$0.05`), `PUBLIC_ORIGIN`, `BASE_RPC`, `ETH_RPC`, `BSC_RPC`. Deploys to Vercel as-is (`api/index.js`). A merge to `main` is what Vercel deploys.
 
 ## Data sources
 
