@@ -388,6 +388,34 @@ app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
 app.get("/.well-known/mcp-registry-auth", (_, res) => res.type("text/plain").send("v=MCPv1; k=ed25519; p=Gkkq+F+PxBJofd16J+xJpg6E+nXM7MWO29cD3+IKe0U="));
 app.get("/.well-known/x402", (_, res) => res.json({ version: 1, resources: ROUTES.map(r => ORIGIN + r.path) }));
 
+// ---- ERC-8004 agent registration file (Identity Registry on Base) ----
+// agentURI on-chain points at ORIGIN + "/.well-known/agent-registration.json"; /agent-card.json is an alias.
+const ERC8004_IDENTITY_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"; // Base mainnet, per erc-8004/erc-8004-contracts
+const ERC8004_AGENT_IDS = []; // filled in after the register() tx confirms
+const agentRegistration = () => ({
+  type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  name: "Automaton",
+  description: `Automaton is an autonomous AI agent (human operator: Michael Rouyre) selling pay-per-call onchain safety checks over x402, USDC on Base (eip155:8453), payTo ${PAY_TO}. ${ROUTES.length} paid HTTP routes, also exposed as paid MCP tools: tx explainer, token approvals, address inspector and contract-risk heuristics on Base, Ethereum, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche; Solana token, address and delegate checks; URL safety; honeypot sim, quick token verdict, deep scan, wallet/token reports, approval sweep, safe-to-send recipient check, batch checks (up to 20 addresses), launch feed and BNB smart-money feed. Prices $0.005 to $1.50 per call. How to pay: GET an endpoint, answer the HTTP 402 with an x402 v2 exact-scheme USDC payment on Base (PAYMENT-SIGNATURE header). Invalid input gets a free 400 before any charge. Full list with prices: ${ORIGIN}/openapi.json. Results are heuristics, not guarantees.`,
+  image: ORIGIN + "/agent-icon.svg",
+  services: [
+    { name: "web", endpoint: ORIGIN + "/" },
+    { name: "MCP", endpoint: ORIGIN + "/mcp", version: "2025-06-18" },
+    { name: "OpenAPI", endpoint: ORIGIN + "/openapi.json", version: "3.1.0" },
+    { name: "x402", endpoint: ORIGIN + "/.well-known/x402", version: "2" },
+    { name: "source", endpoint: "https://github.com/povrouyre-wq/automaton-onchain-tools" },
+    { name: "agentWallet", endpoint: `eip155:8453:${PAY_TO}` },
+  ],
+  x402Support: true,
+  active: true,
+  registrations: ERC8004_AGENT_IDS.map(agentId => ({ agentId, agentRegistry: `eip155:8453:${ERC8004_IDENTITY_REGISTRY}` })),
+  supportedTrust: ["reputation"],
+  endpoints: ROUTES.map(r => ({ path: r.path, method: "GET", price: r.price, currency: "USDC", network: NETWORK, name: r.name })),
+});
+const sendAgentRegistration = (_, res) => { res.set("cache-control", "public, max-age=300"); res.set("access-control-allow-origin", "*"); res.json(agentRegistration()); };
+app.get("/.well-known/agent-registration.json", sendAgentRegistration);
+app.get("/agent-card.json", sendAgentRegistration);
+app.get("/agent-icon.svg", (_, res) => { res.set("cache-control", "public, max-age=86400"); res.type("image/svg+xml").send('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="#0b1220"/><circle cx="128" cy="128" r="84" fill="none" stroke="#2f80ff" stroke-width="14"/><text x="128" y="156" font-family="Arial,Helvetica,sans-serif" font-size="88" font-weight="700" fill="#ffffff" text-anchor="middle">A</text></svg>'); });
+
 // ---- MCP (stateless streamable HTTP; each paid tool call settles via x402) ----
 let mcpReady;
 async function buildMcp() {
