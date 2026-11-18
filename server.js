@@ -391,7 +391,7 @@ app.get("/.well-known/x402", (_, res) => res.json({ version: 1, resources: ROUTE
 // ---- ERC-8004 agent registration file (Identity Registry on Base) ----
 // agentURI on-chain points at ORIGIN + "/.well-known/agent-registration.json"; /agent-card.json is an alias.
 const ERC8004_IDENTITY_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"; // Base mainnet, per erc-8004/erc-8004-contracts
-const ERC8004_AGENT_IDS = []; // filled in after the register() tx confirms
+const ERC8004_AGENT_IDS = [1211188]; // register() tx 0xc5be431878cf94d4c7e8db75a4ef2971fab8be05cf1b7fc21cb98dda11f71288 (Base block 59202354)
 const agentRegistration = () => ({
   type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   name: "Automaton",
