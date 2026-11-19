@@ -181,14 +181,37 @@ const DISCLAIMER = "Automated heuristics from public data only. Common admin pow
 const LISTS = { metamask: "https://raw.githubusercontent.com/MetaMask/eth-phishing-detect/main/src/config.json",
   phishingDb: "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt" };
 let lists = null, listsAt = 0, listsP = null;
+// Race plus abort. T() alone leaves the socket open, and fetch() resolves on headers, so a stalled body used to run until the route deadline.
+function withAbort(ms, fn) {
+  const ac = new AbortController();
+  let timer;
+  const work = Promise.resolve().then(() => fn(ac.signal));
+  work.catch(() => {});
+  return Promise.race([
+    work,
+    new Promise((_, rej) => { timer = setTimeout(() => { ac.abort(); rej(new Error("timeout")); }, ms); }),
+  ]).finally(() => clearTimeout(timer)).catch(e => { if (e?.name === "AbortError") throw new Error("timeout"); throw e; });
+}
+const stringsOf = arr => Array.isArray(arr) ? arr.filter(d => typeof d === "string" && d) : null;
 async function loadLists() {
   if (lists && Date.now() - listsAt < 6 * 3600e3) return lists;
-  listsP ??= (async () => {
-    const [mm, pdb] = await Promise.allSettled([T(fetch(LISTS.metamask).then(r => r.json()), 15000), T(fetch(LISTS.phishingDb).then(r => r.text()), 15000)]);
-    const n = { mmBlack: new Set(), mmWhite: new Set(), mmFuzzy: [], pdb: new Set(), status: {} };
-    if (mm.status === "fulfilled") { mm.value.blacklist.forEach(d => n.mmBlack.add(d)); mm.value.whitelist.forEach(d => n.mmWhite.add(d)); n.mmFuzzy = mm.value.fuzzylist; n.status.metamask = "ok"; } else n.status.metamask = "unavailable";
-    if (pdb.status === "fulfilled") { for (const l of pdb.value.split("\n")) { const d = l.trim(); if (d && !d.startsWith("#")) n.pdb.add(d.toLowerCase()); } n.status.phishingDatabase = "ok"; } else n.status.phishingDatabase = "unavailable";
-    lists = n; listsAt = Date.now(); listsP = null; return n; })();
+  if (!listsP) {
+    const job = (async () => {
+      const [mm, pdb] = await Promise.allSettled([
+        withAbort(15000, async signal => { const r = await fetch(LISTS.metamask, { signal }); if (!r.ok) throw new Error("metamask list " + r.status); return JSON.parse(await r.text()); }),
+        withAbort(15000, async signal => { const r = await fetch(LISTS.phishingDb, { signal }); if (!r.ok) throw new Error("phishing list " + r.status); return r.text(); }),
+      ]);
+      const n = { mmBlack: new Set(), mmWhite: new Set(), mmFuzzy: [], pdb: new Set(), status: {} };
+      const doc = mm.status === "fulfilled" ? mm.value : null;
+      const black = stringsOf(doc?.blacklist), white = stringsOf(doc?.whitelist), fuzzy = stringsOf(doc?.fuzzylist);
+      if (black && white && fuzzy) { for (const d of black) n.mmBlack.add(d); for (const d of white) n.mmWhite.add(d); n.mmFuzzy = fuzzy; n.status.metamask = "ok"; }
+      else n.status.metamask = "unavailable";
+      if (pdb.status === "fulfilled" && typeof pdb.value === "string") { for (const l of pdb.value.split("\n")) { const d = l.trim(); if (d && !d.startsWith("#")) n.pdb.add(d.toLowerCase()); } n.status.phishingDatabase = "ok"; }
+      else n.status.phishingDatabase = "unavailable";
+      lists = n; listsAt = Date.now(); return n;
+    })().finally(() => { listsP = null; });
+    listsP = job;
+  }
   return listsP;
 }
 const BRANDS = ["google.com", "paypal.com", "apple.com", "microsoft.com", "amazon.com", "facebook.com", "instagram.com", "netflix.com", "coinbase.com", "binance.com", "metamask.io", "opensea.io", "uniswap.org", "etherscan.io", "basescan.org", "bscscan.com", "kraken.com", "crypto.com", "ledger.com", "trezor.io", "phantom.app", "x.com", "twitter.com", "github.com", "chase.com", "wellsfargo.com", "bankofamerica.com", "dropbox.com", "linkedin.com", "outlook.com", "office.com", "icloud.com", "whatsapp.com", "telegram.org", "discord.com", "steamcommunity.com", "aave.com", "lido.fi", "pancakeswap.finance", "rainbow.me"];
@@ -199,20 +222,30 @@ function lev(a, b) { const d = Array.from({ length: a.length + 1 }, (_, i) => [i
 const label = h => { const p = h.split("."); return p.length >= 2 ? p.slice(-2).join(".") : h; }; // naive registrable domain (no PSL)
 let boot = null;
 async function rdapBase(tld) {
-  boot ??= T(fetch("https://data.iana.org/rdap/dns.json").then(r => r.json()), 8000).then(d => { const m = {}; for (const [tlds, urls] of d.services) for (const t of tlds) m[t] = urls.find(u => u.startsWith("https")) || urls[0]; return m; }).catch(e => { boot = null; throw e; });
+  boot ??= withAbort(8000, async signal => { const r = await fetch("https://data.iana.org/rdap/dns.json", { signal }); if (!r.ok) throw new Error("rdap bootstrap " + r.status); return JSON.parse(await r.text()); })
+    .then(d => { const m = {}; for (const [tlds, urls] of d.services) for (const t of tlds) m[t] = urls.find(u => u.startsWith("https")) || urls[0]; return m; }).catch(e => { boot = null; throw e; });
   return (await boot)[tld];
 }
+// Warm the shared blocklists and the RDAP bootstrap once per batch, outside the per-URL timeout.
+export function prepareUrlSafety() {
+  return Promise.all([loadLists(), rdapBase("com").catch(() => null)]).then(() => undefined);
+}
+const dropBody = r => { r.body?.cancel?.().catch(() => {}); };
 async function rdapAge(domain) {
   try { const b = await rdapBase(domain.split(".").pop()); if (!b) return { status: "no RDAP server for TLD" };
-    const r = await T(fetch(b.replace(/\/?$/, "/") + "domain/" + domain, { headers: { accept: "application/rdap+json", "user-agent": "automaton-url-safety/1.0" } }), 6000);
-    if (r.status === 404) return { status: "not found in RDAP (unregistered?)" }; if (!r.ok) return { status: "unavailable", http: r.status };
-    const d = await r.json(); const reg = d.events?.find(e => e.eventAction === "registration")?.eventDate;
-    return reg ? { status: "ok", registered: reg, ageDays: Math.floor((Date.now() - Date.parse(reg)) / 864e5) } : { status: "no registration date" }; } catch { return { status: "unavailable" }; }
+    return await withAbort(6000, async signal => {
+      const r = await fetch(b.replace(/\/?$/, "/") + "domain/" + domain, { headers: { accept: "application/rdap+json", "user-agent": "automaton-url-safety/1.0" }, signal });
+      if (r.status === 404) { dropBody(r); return { status: "not found in RDAP (unregistered?)" }; }
+      if (!r.ok) { dropBody(r); return { status: "unavailable", http: r.status }; }
+      let d; try { d = JSON.parse(await r.text()); } catch { return { status: "unavailable" }; }
+      const reg = d.events?.find(e => e.eventAction === "registration")?.eventDate;
+      return reg ? { status: "ok", registered: reg, ageDays: Math.floor((Date.now() - Date.parse(reg)) / 864e5) } : { status: "no registration date" };
+    }); } catch { return { status: "unavailable" }; }
 }
 const PRIVATE = /^(localhost|.*\.local|.*\.internal)$|^(\d+\.){3}\d+$|^\[|:/i;
 async function httpsProbe(host) {
   if (PRIVATE.test(host)) return { checked: false, reason: "IP literal or private host not probed" };
-  try { const r = await T(fetch("https://" + host + "/", { method: "HEAD", redirect: "manual" }), 5000); return { checked: true, httpsReachable: true, status: r.status, redirectsTo: r.headers.get("location")?.slice(0, 200) ?? null }; }
+  try { const r = await withAbort(5000, signal => fetch("https://" + host + "/", { method: "HEAD", redirect: "manual", signal })); return { checked: true, httpsReachable: true, status: r.status, redirectsTo: r.headers.get("location")?.slice(0, 200) ?? null }; }
   catch (e) { return { checked: true, httpsReachable: false, error: String(e.cause?.code || e.message).slice(0, 80) }; }
 }
 export async function urlSafety(raw) {

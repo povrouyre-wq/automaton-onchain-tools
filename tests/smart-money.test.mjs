@@ -110,7 +110,7 @@ test("402 for /v1/bsc/smart-money: $0.02 USDC on Base, Bazaar Use when, bad limi
   assert.equal((await fetch(BASE + "/v1/bsc/smart-money?minHits=0")).status, 400);
   assert.equal((await fetch(BASE + "/v1/bsc/smart-money?minHits=11")).status, 400);
   const o = await (await fetch(BASE + "/openapi.json")).json();
-  assert.equal(o.info.version, "1.17.0");
+  assert.equal(o.info.version, "1.18.0");
   const op = o.paths["/v1/bsc/smart-money"].get;
   assert.equal(op.operationId, "bsc_smart_money");
   assert.match(op.description, /^Use when: /); assert.ok(op.description.length <= 500);

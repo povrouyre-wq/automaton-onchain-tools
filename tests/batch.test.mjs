@@ -10,7 +10,7 @@ hang.unref();
 Object.assign(process.env, { NO_LISTEN: "1", FACILITATOR_URL: `http://127.0.0.1:${hang.address().port}`, X402_NETWORK: "eip155:8453" });
 
 const { default: app } = await import("../server.js");
-const { parseAddressList, runAddressBatch, approvalsBatch, safeToSendBatch, BATCH_BUDGET_MS, BATCH_CONCURRENCY, BATCH_ITEM_MS, BATCH_ROUTE_DEADLINE_MS } = await import("../batch.js");
+const { parseAddressList, parseUrlList, runAddressBatch, approvalsBatch, safeToSendBatch, urlSafetyBatch, BATCH_BUDGET_MS, BATCH_CONCURRENCY, BATCH_ITEM_MS, BATCH_ROUTE_DEADLINE_MS, URL_BATCH_PREPARE_MS, URL_BATCH_ITEM_MS, URL_BATCH_BUDGET_MS, URL_BATCH_DEADLINE_MS } = await import("../batch.js");
 const srv = app.listen(0);
 await new Promise(r => srv.once("listening", r));
 srv.unref();
@@ -190,7 +190,7 @@ test("402 for batch routes is $0.05 on the same rail; bad input is a free 400", 
   assert.equal((await fetch(`${BASE}/v1/solana/safe-to-send/batch?addresses=${A}`)).status, 400);
 
   const o = await (await fetch(BASE + "/openapi.json")).json();
-  assert.equal(o.info.version, "1.17.0");
+  assert.equal(o.info.version, "1.18.0");
   assert.match(o.info.description, /\$0\.05/);
   const op = o.paths["/v1/base/approvals/batch"].get;
   assert.equal(op.operationId, "base_token_approvals_batch");
@@ -214,4 +214,104 @@ test("402 for batch routes is $0.05 on the same rail; bad input is a free 400", 
   const home = await (await fetch(BASE + "/", { headers: { accept: "text/html" } })).text();
   assert.match(home, /\/v1\/\{chain\}\/approvals\/batch/);
   assert.match(home, /\/v1\/\{chain\}\/safe-to-send\/batch/);
+  assert.match(home, /\/v1\/url-safety\/batch\?urls=/);
+});
+
+test("parseUrlList dedupes canonical URLs and rejects empty, invalid, or oversized lists", () => {
+  assert.deepEqual(parseUrlList(" https://Example.com , https://example.com/ "), ["https://Example.com"]);
+  assert.deepEqual(parseUrlList("example.com,https://example.com/"), ["example.com"]);
+  assert.equal(parseUrlList("https://a.example,https://b.example").length, 2);
+  assert.equal(parseUrlList(Array.from({ length: 20 }, (_, i) => `https://h${i}.example`).join(",")).length, 20);
+  for (const raw of ["", "   ", "ftp://example.com", "javascript:alert(1)", "http://", "https://ok.example,ftp://example.com", "https://ok.example,", ",https://ok.example", "ab", "a b c", "https://" + "a".repeat(2100) + ".example"]) {
+    assert.throws(() => parseUrlList(raw), e => e.status === 400, JSON.stringify(raw));
+  }
+  assert.throws(() => parseUrlList(Array.from({ length: 21 }, (_, i) => `https://h${i}.example`).join(",")), e => e.status === 400 && /at most 20/.test(e.message));
+  assert.throws(() => parseUrlList(1), e => e.status === 400);
+});
+
+test("url safety batch keeps order, isolates failures, and fits the function limit", async () => {
+  const urls = ["https://a.example/x", "https://b.example", "https://a.example/x"];
+  let prepared = 0;
+  const batch = await urlSafetyBatch(urls.join(","), {
+    prepare: async () => { prepared++; },
+    lookup: async url => {
+      if (url.includes("b.example")) throw new Error("rdap down");
+      return { url, host: "a.example", verdict: "no known issues", score: 0 };
+    },
+  });
+  assert.equal(prepared, 1);
+  assert.equal(batch.type, "url-safety-batch");
+  assert.equal(batch.count, 2);
+  assert.equal(batch.partial, false);
+  assert.deepEqual(batch.results.map(r => r.url), ["https://a.example/x", "https://b.example"]);
+  assert.equal(batch.results[0].status, "ok");
+  assert.equal(batch.results[0].result.verdict, "no known issues");
+  assert.equal(batch.results[1].status, "error");
+  assert.match(batch.results[1].error, /rdap down/);
+  assert.equal(batch.results[1].result, undefined);
+
+  const partial = await urlSafetyBatch("https://slow.example", {
+    prepare: async () => {},
+    lookup: async () => { throw Object.assign(new Error("upstream timeout after 8000 ms"), { status: 504 }); },
+    itemMs: 200, budgetMs: 500,
+  });
+  assert.equal(partial.partial, true);
+  assert.equal(partial.results[0].status, "partial");
+  assert.equal(partial.results[0].url, "https://slow.example");
+  assert.ok(URL_BATCH_ITEM_MS * Math.ceil(20 / BATCH_CONCURRENCY) <= URL_BATCH_BUDGET_MS);
+  assert.ok(URL_BATCH_PREPARE_MS + URL_BATCH_BUDGET_MS < URL_BATCH_DEADLINE_MS && URL_BATCH_DEADLINE_MS <= 55000);
+});
+
+test("402 for URL safety batch is $0.05; the single route stays $0.005; bad lists are a free 400", async () => {
+  const single = pay(await fetch(`${BASE}/v1/url-safety?url=https://example.com`));
+  assert.equal(single.accepts[0].amount, "5000");
+  const bare = await fetch(`${BASE}/v1/url-safety/batch`);
+  assert.equal(bare.status, 402);
+  const ok = await fetch(`${BASE}/v1/url-safety/batch?urls=${encodeURIComponent("https://example.com/login, https://example.org")}`);
+  assert.equal(ok.status, 402);
+  const req = pay(ok); const a = req.accepts[0];
+  assert.equal(a.scheme, "exact");
+  assert.equal(a.amount, "50000");
+  assert.equal(a.network, single.accepts[0].network);
+  assert.equal(a.payTo, single.accepts[0].payTo);
+  assert.equal(a.asset, single.accepts[0].asset);
+  assert.deepEqual(a.extra, single.accepts[0].extra);
+  assert.match(req.resource.url, /\/v1\/url-safety\/batch$/);
+  assert.match(req.resource.description, /^Use when: are these links phishing or scam sites\?/);
+  assert.match(req.resource.description, /\$0\.05/);
+  assert.match(req.resource.description, /20/);
+  assert.ok(req.resource.description.length <= 500, String(req.resource.description.length));
+  const schema = req.extensions.bazaar.schema.properties.input.properties.queryParams;
+  assert.deepEqual(schema.required, ["urls"]);
+  assert.equal(schema.properties.urls.type, "string");
+  assert.ok(req.extensions.bazaar.info.input.queryParams.urls.includes(","));
+  const tooMany = Array.from({ length: 21 }, (_, i) => `https://h${i}.example`).join(",");
+  for (const [label, path] of [
+    ["empty", "/v1/url-safety/batch?urls="],
+    ["blank", "/v1/url-safety/batch?urls=%20%20"],
+    ["invalid", "/v1/url-safety/batch?urls=ftp://example.com"],
+    ["mixed", "/v1/url-safety/batch?urls=" + encodeURIComponent("https://ok.example,ftp://example.com")],
+    ["too many", `/v1/url-safety/batch?urls=${encodeURIComponent(tooMany)}`],
+  ]) {
+    const bad = await fetch(BASE + path);
+    assert.equal(bad.status, 400, label);
+    assert.equal(bad.headers.get("payment-required"), null, label);
+  }
+  assert.equal((await fetch(`${BASE}/v1/url-safety/batch?urls=${encodeURIComponent("https://example.com,https://example.com/")}`)).status, 402);
+  const o = await (await fetch(BASE + "/openapi.json")).json();
+  assert.equal(o.info.version, "1.18.0");
+  assert.match(o.info.description, /\/v1\/url-safety\/batch/);
+  const op = o.paths["/v1/url-safety/batch"].get;
+  assert.equal(op.operationId, "url_safety_check_batch");
+  assert.equal(op["x-payment-info"].price.amount, "0.05");
+  assert.equal(op.parameters.find(p => p.name === "urls").required, true);
+  assert.match(op.description, /^Use when: /);
+  assert.equal(o.paths["/v1/url-safety"].get["x-payment-info"].price.amount, "0.005");
+  const disc = await (await fetch(BASE + "/.well-known/x402")).json();
+  assert.ok(disc.resources.some(u => u.endsWith("/v1/url-safety/batch")));
+  const card = await (await fetch(BASE + "/.well-known/agent-registration.json")).json();
+  assert.ok(card.endpoints.some(e => e.path === "/v1/url-safety/batch" && e.price === "$0.05" && e.method === "GET"));
+  assert.match(card.description, /\/v1\/url-safety\/batch/);
+  const llms = await (await fetch(BASE + "/llms.txt")).text();
+  assert.match(llms, /\/v1\/url-safety\/batch\?urls=<urls>/);
 });

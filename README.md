@@ -2,7 +2,7 @@
 
 [![M8ven Score](https://m8ven.ai/badge/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?v=0e560c4d737408fa245aa4e54cf10936)](https://m8ven.ai/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?s=readme)
 
-Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.005 to $0.02 per call, or $0.05 for a batch of up to 20 addresses, in **USDC on Base** (`eip155:8453`). There's no signup and no API key. An MCP server is included.
+Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.005 to $0.02 per call, or $0.05 for a batch of up to 20 addresses or URLs, in **USDC on Base** (`eip155:8453`). There's no signup and no API key. An MCP server is included.
 
 **Live:** https://automaton-tx-explainer.vercel.app · [OpenAPI](https://automaton-tx-explainer.vercel.app/openapi.json) · [llms.txt](https://automaton-tx-explainer.vercel.app/llms.txt) · [x402 discovery](https://automaton-tx-explainer.vercel.app/.well-known/x402)
 
@@ -10,7 +10,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 
 ## Endpoints
 
-`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). Safe to send also accepts `solana`. With the Solana token check, the Solana address and delegate lookups, the launch feeds, the three quick-verdict routes, the eight safe-to-send routes, the two BNB smart-money routes, the seven approval batch routes and the eight safe-to-send batch routes that gives 76 paid tools.
+`{chain}` is one of `base`, `ethereum`, `bsc`, `arbitrum`, `optimism`, `polygon` or `avalanche` (C-Chain). Safe to send also accepts `solana`. With the Solana token check, the Solana address and delegate lookups, the launch feeds, the three quick-verdict routes, the eight safe-to-send routes, the two BNB smart-money routes, the seven approval batch routes, the eight safe-to-send batch routes and the URL safety batch that gives 77 paid tools.
 
 **Arbitrum, Optimism, Polygon and Avalanche** get the four per-chain lookups only (tx, approvals, address, contract-risk), all at **$0.005**, and their address and contract-risk responses carry the copycat-token flag (see below). They are not part of the gas snapshot, portfolio, wallet/token reports, deep scan or launch feeds, which stay on Base, Ethereum and BNB Chain.
 
@@ -22,6 +22,7 @@ Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.0
 | Address Inspector | `GET /v1/{chain}/address?address=0x…` | $0.005 | EOA / contract / EIP-7702, balance, proxy impl, ERC-20 metadata |
 | Contract Risk Heuristics | `GET /v1/{chain}/contract-risk?address=0x…` | $0.01 ($0.005 on the four lookup-only chains) | Sourcify verification, proxy/admin, owner type, mint/pause/blacklist/fee selectors |
 | URL Safety Check | `GET /v1/url-safety?url=…` | $0.005 | Phishing blocklists, domain age (RDAP), punycode/lookalikes, HTTPS |
+| URL Safety Batch | `GET /v1/url-safety/batch?urls=…,…` | $0.05 | Same URL check for 1 to 20 links. One result per URL, in request order. A failure or timeout is marked on that item. Duplicates are checked once. |
 | Multi-chain Gas Snapshot | `GET /v1/gas?chain=all` | $0.005 | Gas price, base fee, utilization, est. cost of transfer/ERC-20/swap |
 | ENS / Basename Resolver | `GET /v1/ens?name=vitalik.eth` | $0.005 | Name to address + text records, or reverse lookup |
 | Calldata Decoder | `GET /v1/decode?data=0x…` | $0.005 | Decode calldata before signing, with plain-English warnings |
@@ -114,6 +115,14 @@ The sell test is the honeypot checker. Owner powers are `contractRisk`. Holders 
 Each item is `{ address, status, result }` when the single-wallet check succeeded (`result` is that route's JSON), `{ address, status: "error", error }` when that address failed, or `{ address, status: "partial", error }` when that lookup timed out or the batch time budget ran out. The HTTP call still returns 200. `partial: true` on the body means at least one item timed out. A malformed address, an empty list, or more than 20 addresses is a free 400 before the 402, so a bad list is not charged. Lookups run a few at a time so a full batch stays inside the function time limit.
 
 MCP tools follow the route keys, for example `base_token_approvals_batch` and `solana_safe_to_send_batch`.
+
+### Batch URL safety
+
+`GET /v1/url-safety/batch?urls=https://example.com,https://example.org` is $0.05 (`PRICE_BATCH`). It runs the same check as `GET /v1/url-safety` on 1 to 20 http(s) URLs or bare hostnames. The list is comma-separated. Spaces around commas are ignored. The same URL written two ways (`example.com` and `https://example.com/`) is checked once, and results come back in first-seen order. A comma inside a URL cannot be passed in this list.
+
+Each item is `{ url, status, result }` when the single check succeeded (`result` is that route's JSON), `{ url, status: "error", error }` when that URL failed, or `{ url, status: "partial", error }` when that check timed out or the batch time budget ran out. The HTTP call still returns 200. `count` is the number of results after duplicates are removed. `partial: true` means at least one item timed out. An empty list, an invalid URL, or more than 20 URLs is a free 400 before the 402. The single URL route stays $0.005.
+
+MCP tool: `url_safety_check_batch`.
 
 After deploy, index the three routes on CDP Bazaar with one paid call each ($0.06 total, settled to the service wallet):
 
