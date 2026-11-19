@@ -1,6 +1,6 @@
-// Batch lookups for the paid approval and safe-to-send routes. One chain, 1 to 20 addresses.
-// Per-address failures stay on that item. Timeouts are partial so the batch still returns.
-import { approvals } from "./lib.js";
+// Batch lookups for the paid approval, safe-to-send, and URL-safety routes. 1 to 20 inputs.
+// Per-item failures stay on that item. Timeouts are partial so the batch still returns.
+import { approvals, prepareUrlSafety, urlSafety } from "./lib.js";
 import { safeToSend } from "./safe-to-send.js";
 import { isPubkey, SOL_ADDR_RE } from "./solana.js";
 
@@ -55,6 +55,8 @@ export async function runAddressBatch(addresses, lookup, opts = {}) {
   const concurrency = opts.concurrency ?? BATCH_CONCURRENCY;
   const itemMs = opts.itemMs ?? BATCH_ITEM_MS;
   const budgetMs = opts.budgetMs ?? BATCH_BUDGET_MS;
+  const idKey = opts.idKey || "address";
+  const noun = opts.noun || "address";
   const t0 = Date.now();
   const out = new Array(addresses.length);
   let cursor = 0;
@@ -65,17 +67,17 @@ export async function runAddressBatch(addresses, lookup, opts = {}) {
       const address = addresses[i];
       const left = budgetMs - (Date.now() - t0);
       if (left < Math.min(400, itemMs)) {
-        out[i] = { address, status: "partial", error: "batch time budget exhausted before this address was read" };
+        out[i] = { [idKey]: address, status: "partial", error: `batch time budget exhausted before this ${noun} was read` };
         continue;
       }
       const ms = Math.max(1, Math.min(itemMs, left - 15));
       try {
         const result = await withItemTimeout(() => lookup(address), ms);
-        out[i] = { address, status: "ok", result };
+        out[i] = { [idKey]: address, status: "ok", result };
       } catch (e) {
         const msg = String(e?.shortMessage || e?.message || e);
         const partial = e?.status === 504 || /timeout/i.test(msg);
-        out[i] = { address, status: partial ? "partial" : "error", error: msg.slice(0, 200) };
+        out[i] = { [idKey]: address, status: partial ? "partial" : "error", error: msg.slice(0, 200) };
       }
     }
   };
@@ -101,4 +103,69 @@ export async function safeToSendBatch(chain, raw, query = {}, opts = {}) {
   const from = query.from || null, token = query.token || null;
   const lookup = opts.lookup || (address => safeToSend(chain, address, { from, token }));
   return body("safe-to-send-batch", chain, await runAddressBatch(addresses, lookup, opts), { from, token });
+}
+
+// Same acceptance rules as GET /v1/url-safety?url= : 4 to 2048 chars, http(s) or a bare hostname.
+// Comma-separated, like the address batches. A comma inside a URL cannot be represented.
+export const URL_LIST_PATTERN = "^[^,\\s]{4,}(,\\s*[^,\\s]{4,}){0,19}$";
+export const URL_LIST_RE = /^[^,\s]{4,}(,\s*[^,\s]{4,}){0,19}$/;
+export const URL_LIST_MAX_LEN = 42000;
+const URL_ITEM_MAX = 2048;
+export const URL_BATCH_PREPARE_MS = 15000;
+export const URL_BATCH_ITEM_MS = 8000;
+export const URL_BATCH_BUDGET_MS = 36000;
+export const URL_BATCH_DEADLINE_MS = 55000;
+
+export function acceptHttpUrl(raw) {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  if (v.length < 4 || v.length > URL_ITEM_MAX) return null;
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : "https://" + v);
+    if (!["http:", "https:"].includes(u.protocol) || !u.hostname) return null;
+    return { input: v, href: u.href };
+  } catch { return null; }
+}
+
+export function parseUrlList(raw, { max = BATCH_MAX } = {}) {
+  if (typeof raw !== "string") throw bad("query param urls must be a comma-separated list of 1 to 20 http(s) URLs or hostnames");
+  const trimmed = raw.trim();
+  if (!trimmed) throw bad("query param urls must list 1 to 20 URLs");
+  if (trimmed.length > URL_LIST_MAX_LEN) throw bad("query param urls is too long");
+  const parts = trimmed.split(",").map(s => s.trim());
+  if (parts.length > max) throw bad(`query param urls accepts at most ${max} URLs`);
+  const parsed = parts.map(acceptHttpUrl);
+  if (parsed.some(p => !p)) throw bad("query param urls must be a comma-separated list of 1 to 20 http(s) URLs or hostnames");
+  const seen = new Set();
+  const urls = [];
+  for (const p of parsed) {
+    if (seen.has(p.href)) continue;
+    seen.add(p.href);
+    urls.push(p.input);
+  }
+  if (!urls.length) throw bad("query param urls must list 1 to 20 URLs");
+  return urls;
+}
+export const URL_LIST = { parse: parseUrlList, max: BATCH_MAX };
+
+export async function urlSafetyBatch(raw, opts = {}) {
+  const urls = parseUrlList(raw);
+  const prepare = opts.prepare === undefined ? prepareUrlSafety : opts.prepare;
+  if (prepare) {
+    try { await withItemTimeout(() => prepare(), opts.prepareMs ?? URL_BATCH_PREPARE_MS); }
+    catch { /* per-URL lookups report their own upstream failures */ }
+  }
+  const lookup = opts.lookup || (async url => {
+    const r = await urlSafety(url);
+    if (!r) throw Object.assign(new Error("invalid http(s) URL"), { status: 400 });
+    return r;
+  });
+  const results = await runAddressBatch(urls, lookup, {
+    concurrency: opts.concurrency ?? BATCH_CONCURRENCY,
+    itemMs: opts.itemMs ?? URL_BATCH_ITEM_MS,
+    budgetMs: opts.budgetMs ?? URL_BATCH_BUDGET_MS,
+    idKey: "url",
+    noun: "URL",
+  });
+  return { type: "url-safety-batch", count: results.length, partial: results.some(r => r.status === "partial"), results };
 }

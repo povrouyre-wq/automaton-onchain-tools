@@ -22,7 +22,7 @@ import { bscBundles } from "./bundles.js";
 import { honeypotCheck, HONEYPOT_CHAINS } from "./honeypot.js";
 import { tokenVerdict } from "./verdict.js";
 import { safeToSend } from "./safe-to-send.js";
-import { approvalsBatch, safeToSendBatch, parseAddressList, EVM_LIST, SOL_LIST, EVM_LIST_RE, EVM_LIST_PATTERN, SOL_LIST_RE, SOL_LIST_PATTERN, BATCH_ROUTE_DEADLINE_MS } from "./batch.js";
+import { approvalsBatch, safeToSendBatch, urlSafetyBatch, parseAddressList, EVM_LIST, SOL_LIST, URL_LIST, EVM_LIST_RE, EVM_LIST_PATTERN, SOL_LIST_RE, SOL_LIST_PATTERN, URL_LIST_RE, URL_LIST_PATTERN, URL_LIST_MAX_LEN, BATCH_ROUTE_DEADLINE_MS, URL_BATCH_DEADLINE_MS } from "./batch.js";
 import { bscSmartMoney, bscSmartMoneyWallet, runSmartMoneyCron } from "./smart-money.js";
 import { CHAINS, CORE_CHAINS, LOOKUP_ONLY_CHAINS, explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio } from "./lib.js";
 export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensResolve, decodeCalldata, portfolio };
@@ -225,6 +225,15 @@ for (const c of [...Object.keys(CHAINS), "solana"]) {
     out: { type: "safe-to-send-batch", chain: c, from: null, token: null, count: 1, partial: false, results: [{ address: exTo, status: "ok", result: safeOut(c, N, exTo) }] } });
 }
 
+// URL safety batch ($0.05): up to 20 URLs, same checks as /v1/url-safety. Bad lists are rejected before payment.
+const URL_BATCH_DESC = "Up to 20 URLs in one call for $0.05. Same phishing blocklists, RDAP domain age, punycode and brand-lookalike detection, and HTTPS reachability as the single URL check. Results stay in request order. A failed or timed-out URL is marked on that item; the batch still returns.";
+ROUTES.push({ key: "url_safety_check_batch", path: "/v1/url-safety/batch", param: "urls", re: URL_LIST_RE, pattern: URL_LIST_PATTERN, maxLen: URL_LIST_MAX_LEN, list: URL_LIST, price: PRICE_BATCH, deadline: URL_BATCH_DEADLINE_MS,
+  fn: v => urlSafetyBatch(v), name: "URL Safety Batch (up to 20 links)", pdesc: "1 to 20 http(s) URLs or hostnames, comma-separated. Duplicates are checked once. A comma inside a URL cannot be passed.", example: "https://example.com/login,https://example.org",
+  tag: "url", tags: ["security", "phishing", "url", "batch", "web"], cardDesc: URL_BATCH_DESC, desc: URL_BATCH_DESC,
+  out: { type: "url-safety-batch", count: 2, partial: false, results: [
+    { url: "https://example.com/login", status: "ok", result: { url: "https://example.com/login", host: "example.com", verdict: "no known issues", score: 0, signals: [], blocklists: { metamask: false, phishingDatabase: false }, domainAge: { ageDays: 11000 } } },
+    { url: "https://expired.example", status: "error", error: "upstream timeout" }] } });
+
 // Launch feed: newest token launches (GeckoTerminal new pools) with our risk check on each. Query params are optional.
 const PRICE_FEED = process.env.PRICE_FEED || "$0.01", PRICE_FEED_ALL = process.env.PRICE_FEED_ALL || "$0.02";
 const LIMIT = { name: "limit", re: /^([1-9]|1[0-9]|20)$/, pattern: "^([1-9]|1[0-9]|20)$", desc: "rows per chain, 1-20 (default 10)", example: "10" };
@@ -278,7 +287,7 @@ const UW = (r) => { const N = r.chainLabel || (r.key.split("_")[0] in CHAINS ? C
     contract_risk: `is this ${N} contract risky (owner, proxy, mint, pause, blacklist)?`, honeypot_check: `can I sell this ${N} token, and what is the buy/sell tax?`,
     token_verdict: `should I buy this ${N} token (quick SAFE / CAUTION / AVOID)?`,
     safe_to_send: `is it safe to send to this ${N} address?`, safe_to_send_batch: `is it safe to send to these ${N} addresses?`,
-    url_safety_check: "is this link a phishing or scam site?", gas_snapshot: "how much gas will a transfer or swap cost right now?", ens_resolve: "what address is behind this ENS name or Basename (or vice versa)?",
+    url_safety_check: "is this link a phishing or scam site?", url_safety_check_batch: "are these links phishing or scam sites?", gas_snapshot: "how much gas will a transfer or swap cost right now?", ens_resolve: "what address is behind this ENS name or Basename (or vice versa)?",
     calldata_decode: "what am I about to sign with this calldata?", wallet_portfolio: "what tokens does this wallet hold on Base, Ethereum and BNB?", wallet_report: "is this wallet safe (approvals, delegation, balances) in one report?",
     token_report: "should I trust this token contract (owner, supply, flags)?", token_deep_scan: "is this token a honeypot or rug (sell sim, liquidity, LP lock, holders)?",
     solana_token_check: "is this Solana or pump.fun token a rug (authorities, holders)?", solana_address_lookup: "what is this Solana address and what does it hold?",
@@ -326,7 +335,7 @@ for (const r of ROUTES) app.get(r.path, (req, res, next) => {
   for (const ex of routeExtras(r)) if (req.query[ex.name] !== undefined && !extraOk(ex, req.query[ex.name])) return res.status(400).json({ error: `query param ${ex.name} must match ${ex.pattern}` });
   if (r.list) {
     if (v === undefined && !hasPay(req)) return next();
-    try { parseAddressList(v, r.list); }
+    try { (r.list.parse || parseAddressList)(v, r.list); }
     catch (e) { return res.status(400).json({ error: e.message }); }
     return next();
   }
@@ -377,8 +386,8 @@ app.get("/free/launches", async (req, res) => {
   catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
 });
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.17.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.02 quick token verdict for those three chains (SAFE / CAUTION / AVOID, bundling sellability, tax, owner powers, LP burn/lock and holder concentration), a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), a $0.02 BNB Chain smart-money feed (wallets that repeatedly bought early into four.meme and PancakeSwap launches that then ran, plus one wallet's recent buys; free public RPC logs only, about 2 days, reported as lookback_hours), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs), plus a $0.005 safe-to-send pre-transfer recipient check on all 8 chains (safe / caution / danger: address-poisoning lookalikes, free scam/drainer flags, contract token handling, fresh empty addresses; every signal is a heuristic). Batch endpoints are $0.05 each for up to 20 addresses: GET /v1/{chain}/approvals/batch on every EVM chain the single approvals route supports, and GET /v1/{chain}/safe-to-send/batch on the same chains as safe-to-send, including Solana. One result per address; invalid lists are a free 400 before payment.",
+  info: { title: "Automaton Onchain & URL Tools", version: "1.18.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.02 quick token verdict for those three chains (SAFE / CAUTION / AVOID, bundling sellability, tax, owner powers, LP burn/lock and holder concentration), a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), a $0.02 BNB Chain smart-money feed (wallets that repeatedly bought early into four.meme and PancakeSwap launches that then ran, plus one wallet's recent buys; free public RPC logs only, about 2 days, reported as lookback_hours), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs), plus a $0.005 safe-to-send pre-transfer recipient check on all 8 chains (safe / caution / danger: address-poisoning lookalikes, free scam/drainer flags, contract token handling, fresh empty addresses; every signal is a heuristic). Batch endpoints are $0.05 each for up to 20 inputs: GET /v1/{chain}/approvals/batch on every EVM chain the single approvals route supports, GET /v1/{chain}/safe-to-send/batch on the same chains as safe-to-send, including Solana, and GET /v1/url-safety/batch for the same checks as the $0.005 URL safety route. One result per input; invalid lists are a free 400 before payment.",
     "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path.replace(/:([A-Za-z0-9_]+)/g, "{$1}"), { get: { operationId: r.key, summary: r.name, description: r.desc,
@@ -395,7 +404,7 @@ const ERC8004_AGENT_IDS = [1211188]; // register() tx 0xc5be431878cf94d4c7e8db75
 const agentRegistration = () => ({
   type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   name: "Automaton",
-  description: `Automaton is an autonomous AI agent (human operator: Michael Rouyre) selling pay-per-call onchain safety checks over x402, USDC on Base (eip155:8453), payTo ${PAY_TO}. ${ROUTES.length} paid HTTP routes, also exposed as paid MCP tools: tx explainer, token approvals, address inspector and contract-risk heuristics on Base, Ethereum, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche; Solana token, address and delegate checks; URL safety; honeypot sim, quick token verdict, deep scan, wallet/token reports, approval sweep, safe-to-send recipient check, batch checks (up to 20 addresses), launch feed and BNB smart-money feed. Prices $0.005 to $1.50 per call. How to pay: GET an endpoint, answer the HTTP 402 with an x402 v2 exact-scheme USDC payment on Base (PAYMENT-SIGNATURE header). Invalid input gets a free 400 before any charge. Full list with prices: ${ORIGIN}/openapi.json. Results are heuristics, not guarantees.`,
+  description: `Automaton is an autonomous AI agent (human operator: Michael Rouyre) selling pay-per-call onchain safety checks over x402, USDC on Base (eip155:8453), payTo ${PAY_TO}. ${ROUTES.length} paid HTTP routes, also exposed as paid MCP tools: tx explainer, token approvals, address inspector and contract-risk heuristics on Base, Ethereum, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche; Solana token, address and delegate checks; URL safety and a URL safety batch (up to 20 links, GET /v1/url-safety/batch); honeypot sim, quick token verdict, deep scan, wallet/token reports, approval sweep, safe-to-send recipient check, batch checks (up to 20 addresses or URLs), launch feed and BNB smart-money feed. Prices $0.005 to $1.50 per call. How to pay: GET an endpoint, answer the HTTP 402 with an x402 v2 exact-scheme USDC payment on Base (PAYMENT-SIGNATURE header). Invalid input gets a free 400 before any charge. Full list with prices: ${ORIGIN}/openapi.json. Results are heuristics, not guarantees.`,
   image: ORIGIN + "/agent-icon.svg",
   services: [
     { name: "web", endpoint: ORIGIN + "/" },
@@ -423,12 +432,12 @@ async function buildMcp() {
   const wrap = {};
   for (const r of ROUTES) { const extras = routeExtras(r); wrap[r.key] = createPaymentWrapper(server, {
     accepts: await server.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo: PAY_TO, price: r.price }),
-    resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" ? ["security"] : ["onchain"])] },
+    resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" || r.param === "urls" ? ["security"] : ["onchain"])] },
     extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen), ...Object.fromEntries(extras.map(e => [e.name, prop(e.pattern, e.desc, e.maxLen)])) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...Object.fromEntries(extras.filter(e => e.example != null).map(e => [e.name, e.example])) } }) } }); }
   return () => {
-    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.17.0" });
+    const m = new McpServer({ name: "automaton-onchain-tools", version: "1.18.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
-    for (const r of ROUTES) { const zz = r.param === "url" ? z.string().min(4).max(r.param === "data" ? 8010 : 2048) : z.string().regex(r.re);
+    for (const r of ROUTES) { const zz = r.list?.parse ? z.string().max(r.maxLen || 42000).refine(v => { try { r.list.parse(v); return true; } catch { return false; } }) : r.param === "url" ? z.string().min(4).max(r.maxLen || 2048) : z.string().regex(r.re);
       m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...Object.fromEntries(routeExtras(r).map(e => [e.name, z.string().regex(e.re).optional()])) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a), r.deadline)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
     m.tool("ping", "Free health check.", {}, async () => txt({ ok: true }));
     return m;
