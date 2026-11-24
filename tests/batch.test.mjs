@@ -190,7 +190,7 @@ test("402 for batch routes is $0.05 on the same rail; bad input is a free 400", 
   assert.equal((await fetch(`${BASE}/v1/solana/safe-to-send/batch?addresses=${A}`)).status, 400);
 
   const o = await (await fetch(BASE + "/openapi.json")).json();
-  assert.equal(o.info.version, "1.18.0");
+  assert.equal(o.info.version, "1.19.0");
   assert.match(o.info.description, /\$0\.05/);
   const op = o.paths["/v1/base/approvals/batch"].get;
   assert.equal(op.operationId, "base_token_approvals_batch");
@@ -299,7 +299,7 @@ test("402 for URL safety batch is $0.05; the single route stays $0.005; bad list
   }
   assert.equal((await fetch(`${BASE}/v1/url-safety/batch?urls=${encodeURIComponent("https://example.com,https://example.com/")}`)).status, 402);
   const o = await (await fetch(BASE + "/openapi.json")).json();
-  assert.equal(o.info.version, "1.18.0");
+  assert.equal(o.info.version, "1.19.0");
   assert.match(o.info.description, /\/v1\/url-safety\/batch/);
   const op = o.paths["/v1/url-safety/batch"].get;
   assert.equal(op.operationId, "url_safety_check_batch");

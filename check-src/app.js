@@ -31,6 +31,7 @@
       return { url: `/v1/solana/token?address=${a}`, kind, chain: "solana", addr: a }; }
     if (SOLW[kind]) { if (!SOL.test(a)) return { err: "That doesn't look like a Solana address (base58, 32 to 44 characters, no 0x)." };
       return { url: `/v1/solana/${kind === "solwallet" ? "address" : "delegates"}?address=${a}`, kind, chain: "solana", addr: a }; }
+    if (kind === "verdict" && SOL.test(a) && !a.startsWith("0x")) return { url: `/v1/solana/verdict?token=${a}`, kind, chain: "solana", addr: a };
     if (SOL.test(a) && !a.startsWith("0x")) return { err: "That looks like a Solana address. Pick one of the Solana options above." };
     if (!ADDR.test(a)) return { err: "That doesn't look like an address. It should start with 0x followed by 40 hex characters. ENS names aren't supported here." };
     if (kind === "safetosend") {
@@ -229,14 +230,28 @@
     if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
     return h;
   }
+  function shareHtml(r) {
+    let h = r.take ? `<p class=summary>“${esc(r.take)}”</p>` : "";
+    if (r.share?.url) h += `<p><a href="${esc(r.share.url)}" target=_blank rel=noopener>Share this verdict</a> · <a href="${esc(r.share.image)}" target=_blank rel=noopener>PNG card</a></p>`;
+    return h;
+  }
   function verdictHtml(r) {
     const f = r.flags || {};
     const yn = v => v == null ? "?" : v ? "yes" : "no";
     const pct = v => v == null ? "unknown" : esc(v) + "%";
+    if (r.chain === "solana") {
+      const srows = [["Verdict", `<b>${esc(r.verdict)}</b>`], ["Mint authority active", yn(f.mintAuthorityActive)], ["Freeze authority active", yn(f.freezeAuthorityActive)], ["Metadata mutable", yn(f.metadataMutable)],
+        ["Permanent delegate", yn(f.permanentDelegate)], ["Transfer hook", yn(f.transferHook)], ["Transfer fee", pct(f.transferFeePct)], ["Pausable", yn(f.pausable)],
+        ["Top 10 holders (excl. pools/curve)", pct(f.top10HolderPct)], ["Largest wallet", pct(f.largestWalletPct)], ["DEX liquidity", f.liquidityUsd == null ? "unknown" : "$" + esc(Math.round(f.liquidityUsd).toLocaleString())],
+        ["pump.fun", esc(f.pumpfun || "no")], ["LP burned", pct(f.lpBurnedOrLockedPct)], ["Copycat of a major token", f.copycatName ? "<b class=bad>yes</b>" : "no"]];
+      let sh = shareHtml(r) + `<h3>Flags</h3><table><tbody>${srows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>`;
+      if ((r.couldNotDetermine || []).length) sh += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
+      return sh;
+    }
     const rows = [["Verdict", `<b>${esc(r.verdict)}</b>`], ["Can you sell it?", `<b>${f.sellable ? "yes" : "NO"}</b>`], ["Buy tax", pct(f.buyTaxPct)], ["Sell tax", pct(f.sellTaxPct)],
       ["Owner renounced", yn(f.ownerRenounced)], ["Proxy / upgradeable", yn(f.isProxy)], ["Can mint", yn(f.canMint)], ["Can pause", yn(f.canPause)], ["Can blacklist", yn(f.canBlacklist)], ["Can change fees", yn(f.canChangeFees)],
       ["LP burned or locked", pct(f.lpBurnedOrLockedPct)], ["Top 10 holders (excl. pools/burn)", pct(f.top10HolderPct)], ["Copycat of a major token", f.copycatName ? "<b class=bad>yes</b>" : "no"]];
-    let h = `<h3>Flags</h3><table><tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>`;
+    let h = shareHtml(r) + `<h3>Flags</h3><table><tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>`;
     if (r.coverage?.pool) h += `<p class="muted small">Simulated on ${esc(r.coverage.pool.dex || "")} ${esc(r.coverage.simulation?.tradeSize || "")}.</p>`;
     if ((r.couldNotDetermine || []).length) h += `<h3>What we couldn't determine</h3><ul>${r.couldNotDetermine.map(x => `<li class=muted>${esc(x)}</li>`).join("")}</ul>`;
     if (r.coverage?.notes?.length) h += `<ul>${r.coverage.notes.map(x => `<li class="muted small">${esc(x)}</li>`).join("")}</ul>`;
