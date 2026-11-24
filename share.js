@@ -137,10 +137,13 @@ export async function cardPng(d) {
   return Buffer.from(await r.arrayBuffer());
 }
 
+// Fixed demo card (/v/sample, /v/sample.png): shows the layout and lets a deploy check the PNG renderer without a paid call.
+const SAMPLE = () => ({ v: 1, c: "solana", a: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", s: "Bonk", n: "Bonk (sample card)", V: "CAUTION", r: "medium",
+  t: "$Bonk: no smoking gun, but the name and logo can still be swapped overnight.", f: [["medium", "Metadata is mutable, so the name, symbol and image can still be changed."], ["medium", "LP burn/lock share could not be determined."]], ts: 1795564800 });
 export function mountShare(app, { ORIGIN }) {
   app.get("/v/:id", async (req, res) => {
     const raw = String(req.params.id || ""), png = raw.endsWith(".png"), id = png ? raw.slice(0, -4) : raw;
-    const d = readShareId(id);
+    const d = id === "sample" ? SAMPLE() : readShareId(id);
     if (!d) return res.status(404).type(png ? "text/plain" : "text/html").send(png ? "unknown or tampered card" : "<!doctype html><p>Unknown or tampered verdict card.</p>");
     res.set("cache-control", "public, max-age=86400, s-maxage=31536000, immutable");
     if (!png) return res.type("text/html").send(sharePageHtml(d, id, ORIGIN));

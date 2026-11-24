@@ -73,6 +73,7 @@ test("share page and PNG are served; tampered ids are 404", { timeout: 30000 }, 
   assert.match(html, /twitter:card" content="summary_large_image"/); assert.match(html, /og:image" content="[^"]+\.png"/); assert.match(html, /SAFE/);
   const png = await fetch(vv.share.image); assert.equal(png.status, 200); assert.equal(png.headers.get("content-type"), "image/png");
   const b = Buffer.from(await png.arrayBuffer()); assert.equal(b.subarray(1, 4).toString(), "PNG"); assert.equal(b.readUInt32BE(16), 1200); assert.equal(b.readUInt32BE(20), 630);
+  assert.equal((await fetch(BASE + "/v/sample.png")).status, 200); assert.equal((await fetch(BASE + "/v/sample")).status, 200);
   assert.equal((await fetch(vv.share.url + "x")).status, 404); assert.equal((await fetch(BASE + "/v/nope.png")).status, 404);
 });
 
