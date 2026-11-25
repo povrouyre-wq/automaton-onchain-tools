@@ -73,15 +73,20 @@ export function parseMetaplex(b) {
 
 const BAD_EXT = { permanentDelegate: 1, transferHook: 1, transferFeeConfig: 1, defaultAccountState: 1, nonTransferable: 1, pausableConfig: 1 };
 function readExtensions(list) {
-  const out = { present: [], findings: [], transferFeeBps: null };
+  const out = { present: [], findings: [], transferFeeBps: null, transferFeeAuthority: null, transferHookAuthority: null, defaultFrozen: false, nonTransferable: false, paused: false, pauseAuthority: null };
   for (const x of list || []) {
     const n = x.extension, s = x.state || {}; out.present.push(n);
     if (n === "permanentDelegate" && s.delegate) { out.permanentDelegate = s.delegate; out.findings.push({ severity: "high", note: `Permanent delegate ${s.delegate} can move or burn tokens from ANY holder's wallet.` }); }
     if (n === "transferHook" && s.programId) { out.transferHook = s.programId; out.findings.push({ severity: "high", note: `Transfer hook: program ${s.programId} runs on every transfer and could block sells.` }); }
+    if (n === "transferHook" && s.authority) out.transferHookAuthority = s.authority;
     if (n === "transferHook" && !s.programId && s.authority) out.findings.push({ severity: "medium", note: "Transfer hook is empty now, but its authority can set one later." });
     if (n === "transferFeeConfig") { const bps = Number(s.newerTransferFee?.transferFeeBasisPoints ?? s.olderTransferFee?.transferFeeBasisPoints ?? 0); out.transferFeeBps = bps;
       if (bps > 0) out.findings.push({ severity: bps >= 500 ? "high" : "medium", note: `Transfer fee of ${bps / 100}% on every transfer.` });
+      if (s.transferFeeConfigAuthority) out.transferFeeAuthority = s.transferFeeConfigAuthority;
       if (s.transferFeeConfigAuthority) out.findings.push({ severity: "medium", note: "Transfer fee can still be changed (fee authority is set)." }); }
+    if (n === "defaultAccountState" && /frozen/i.test(s.accountState || "")) out.defaultFrozen = true;
+    if (n === "nonTransferable") out.nonTransferable = true;
+    if (n === "pausableConfig") { out.paused = !!s.paused; out.pauseAuthority = s.authority || null; }
     if (n === "defaultAccountState" && /frozen/i.test(s.accountState || "")) out.findings.push({ severity: "high", note: "New token accounts start FROZEN by default." });
     if (n === "nonTransferable") out.findings.push({ severity: "high", note: "Token is non-transferable (can't be sold)." });
     if (n === "pausableConfig") { if (s.paused) out.findings.push({ severity: "high", note: "Transfers are PAUSED right now." }); else if (s.authority) out.findings.push({ severity: "medium", note: "Transfers can be paused (pause authority set)." }); }
@@ -204,7 +209,8 @@ export async function solanaToken(mint) {
     pumpfun.isPumpFun ? (pumpfun.status === "on-curve" ? "Still on the pump.fun bonding curve." : `Graduated from pump.fun${pumpfun.pool?.lpBurnedPct != null ? `, ${pumpfun.pool.lpBurnedPct}% of LP burned` : ""}.`) : "",
     holders.available ? `Top 10 wallets excluding pools hold ${holders.top10ExcludingPoolsPct}%.` : ""].filter(Boolean);
   return { type: "solana-token-check", chain: "solana", kind: "mint", address: mint, tokenProgram: is2022 ? "token-2022" : "spl-token", token, mintAuthority, freezeAuthority, metadata,
-    extensions: { present: ext.present, transferFeeBps: ext.transferFeeBps, permanentDelegate: ext.permanentDelegate || null, transferHook: ext.transferHook || null },
-    pumpfun, holders, riskLevel, findings, summary: bits.join(" "), couldNotDetermine: could,
+    extensions: { present: ext.present, transferFeeBps: ext.transferFeeBps, permanentDelegate: ext.permanentDelegate || null, transferHook: ext.transferHook || null,
+      transferFeeAuthority: ext.transferFeeAuthority, transferHookAuthority: ext.transferHookAuthority, defaultFrozen: ext.defaultFrozen, nonTransferable: ext.nonTransferable, paused: ext.paused, pauseAuthority: ext.pauseAuthority },
+    pumpfun, holders, copycat: imp ? { note: imp.note } : null, riskLevel, findings, summary: bits.join(" "), couldNotDetermine: could,
     disclaimer: "Automated heuristics from public Solana RPC data. Not an audit, not a guarantee, not financial advice. No sell simulation was run." };
 }
