@@ -2,7 +2,7 @@
 
 [![M8ven Score](https://m8ven.ai/badge/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?v=0e560c4d737408fa245aa4e54cf10936)](https://m8ven.ai/mcp/povrouyre-wq-automaton-onchain-tools-1wyi9g?s=readme)
 
-Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.005 to $0.02 per call, or $0.05 for a batch of up to 20 addresses or URLs, in **USDC on Base** (`eip155:8453`). There's no signup and no API key. An MCP server is included.
+Pay-per-call crypto and security APIs for AI agents. You pay with **x402**: $0.005 to $0.02 per call, or $0.05 for a batch of up to 20 addresses or URLs, in **USDC on Base** (`eip155:8453`). When `SOLANA_PAY_TO` is set, the same USD price is also accepted as native **USDC on Solana** (`solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`); Base stays the first `accepts` entry. There's no signup and no API key. An MCP server is included.
 
 **Live:** https://automaton-tx-explainer.vercel.app · [OpenAPI](https://automaton-tx-explainer.vercel.app/openapi.json) · [llms.txt](https://automaton-tx-explainer.vercel.app/llms.txt) · [x402 discovery](https://automaton-tx-explainer.vercel.app/.well-known/x402)
 
@@ -156,7 +156,7 @@ PRIVATE_KEY=0x... node scripts/self-pay-verdict.mjs
 - pump.fun: the bonding-curve PDA tells whether the coin is still on the curve (with approximate progress) or graduated. For graduated coins the PumpSwap pool's LP mint supply is compared with the LP originally minted to get the burned share. LP lock for non-pump.fun tokens is not determined. There is no sell simulation on Solana.
 - RPC: `SOLANA_RPC` (comma-separated), default `api.mainnet-beta.solana.com` then `public.rpc.solanavibestation.com` as fallback. Tests: `tests/solana.test.mjs` (BONK, USDC, Fartcoin, a PumpSwap-graduated coin and a fresh on-curve pump.fun coin).
 
-**Timeouts:** the 402 never waits on the facilitator for more than ~2 s on a cold start (it falls back to the one payment kind we use, exact USDC on Base; verify/settle still go to the real facilitator). Every RPC call has a 4 s timeout (`RPC_TIMEOUT_MS`) and falls through to the next public RPC for that chain, and each paid call is capped at 25 s (`ROUTE_DEADLINE_MS`); a capped call answers `504` and is not settled, so you aren't charged. Regression tests: `tests/resilience.test.mjs`.
+**Timeouts:** the 402 never waits on the facilitator for more than ~2 s on a cold start (it falls back to exact USDC on Base, plus exact USDC on Solana when `SOLANA_PAY_TO` is set; the Solana `feePayer` is copied from the facilitator's `/supported` response once that answer arrives; verify/settle still go to the real facilitator). Every RPC call has a 4 s timeout (`RPC_TIMEOUT_MS`) and falls through to the next public RPC for that chain, and each paid call is capped at 25 s (`ROUTE_DEADLINE_MS`); a capped call answers `504` and is not settled, so you aren't charged. Regression tests: `tests/resilience.test.mjs`.
 
 A bare request with no payment returns `402 Payment Required` along with the payment requirements. If the input is invalid, you get a `400` and are not charged.
 
@@ -187,9 +187,12 @@ The server speaks streamable HTTP (stateless) at `POST https://automaton-tx-expl
 ```bash
 npm install
 PAY_TO=0xYourAddress node server.js   # Base Sepolia + x402.org facilitator by default
+# SOLANA_PAY_TO=<base58 address>      # optional: also accept native USDC on Solana mainnet
 ```
 
-Environment variables: `SOLANA_RPC`, `PAY_TO`, `X402_NETWORK` (`eip155:8453` for mainnet), `FACILITATOR_URL` (`cdp` uses `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`), `PRICE`, `PRICE_SMALL`, `PRICE_SAFE` (default `$0.005`), `PRICE_VERDICT` (default `$0.02`), `PRICE_BATCH` (default `$0.05`), `PUBLIC_ORIGIN`, `BASE_RPC`, `ETH_RPC`, `BSC_RPC`. Deploys to Vercel as-is (`api/index.js`). A merge to `main` is what Vercel deploys.
+Environment variables: `SOLANA_RPC`, `PAY_TO`, `SOLANA_PAY_TO` (base58 Solana address; unset keeps Base as the only payment option), `X402_NETWORK` (`eip155:8453` for mainnet), `FACILITATOR_URL` (`cdp` uses `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`; the same facilitator settles Solana, and PayAI's public facilitator lists Solana mainnet with no extra credentials), `PRICE`, `PRICE_SMALL`, `PRICE_SAFE` (default `$0.005`), `PRICE_VERDICT` (default `$0.02`), `PRICE_BATCH` (default `$0.05`), `PUBLIC_ORIGIN`, `BASE_RPC`, `ETH_RPC`, `BSC_RPC`. Deploys to Vercel as-is (`api/index.js`). A merge to `main` is what Vercel deploys.
+
+The Solana `payTo` wallet needs an associated token account for native USDC (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) before a payment can land. Creating that account is a separate transaction the wallet signs; the facilitator's `feePayer` sponsors the x402 payment itself, not that setup.
 
 ## Data sources
 
