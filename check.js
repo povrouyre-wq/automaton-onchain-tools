@@ -4,7 +4,7 @@ import { APP_JS, PAY_JS, PAY_VER } from "./check-assets.js";
 import { createHash } from "node:crypto";
 const APP_VER = createHash("sha256").update(APP_JS).digest("hex").slice(0, 8); // cache-bust app.js when only the page logic changes
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-export function mountCheck(app, { ORIGIN, PAY_TO, PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005", PRICE_SWEEP = "$0.02", PRICE_BUNDLE = "$0.01", PRICE_HONEYPOT = "$0.01", PRICE_VERDICT = "$0.02", PRICE_SAFE = "$0.005" }) {
+export function mountCheck(app, { ORIGIN, PAY_TO, SOLANA_PAY_TO = "", SOLANA_NETWORK = "", PRICE, PRICE_DEEP = "$1.50", PRICE_SOL = "$0.005", PRICE_SWEEP = "$0.02", PRICE_BUNDLE = "$0.01", PRICE_HONEYPOT = "$0.01", PRICE_VERDICT = "$0.02", PRICE_SAFE = "$0.005" }) {
   const REPO = "https://github.com/povrouyre-wq/automaton-onchain-tools";
   const TITLE = "Check a wallet or token before you trust it | Automaton";
   const DESC = `Pay-per-report crypto safety check. Paste a wallet or token address, pay ${PRICE} in USDC on Base with your own wallet, and get a plain-English risk report. No signup.`;
@@ -41,7 +41,7 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 </style></head><body><div class="w">
 <nav><a class="logo" href="/" style="color:var(--tx)">◆ <b>Automaton</b> Check</a><div><a href="/">For developers</a><a href="${REPO}">Source</a></div></nav>
 <h1>Check a wallet or token<br><span>before you trust it</span></h1>
-<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_SAFE)} for a safe-to-send check, ${esc(PRICE_VERDICT)} for a quick SAFE / CAUTION / AVOID verdict, ${esc(PRICE_HONEYPOT)} for a honeypot/tax check, ${esc(PRICE_BUNDLE)} for a BNB Chain bundle/sniper check, ${esc(PRICE_SWEEP)} for an all-chain approval sweep, ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token, wallet or delegate check) in USDC on Base</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
+<p class="sub">Paste an address, pay <b>${esc(PRICE)} (or ${esc(PRICE_SAFE)} for a safe-to-send check, ${esc(PRICE_VERDICT)} for a quick SAFE / CAUTION / AVOID verdict, ${esc(PRICE_HONEYPOT)} for a honeypot/tax check, ${esc(PRICE_BUNDLE)} for a BNB Chain bundle/sniper check, ${esc(PRICE_SWEEP)} for an all-chain approval sweep, ${esc(PRICE_DEEP)} for a deep scan, ${esc(PRICE_SOL)} for a Solana token, wallet or delegate check) in ${SOLANA_PAY_TO ? "USDC on Base or Solana" : "USDC on Base"}</b> from your own wallet, and get a plain-English risk report. Pay per report. No signup, no account, no subscription.</p>
 
 <form id="form" class="panel" novalidate>
 <div class="kinds">
@@ -86,7 +86,7 @@ footer{border-top:1px solid var(--ln);margin-top:40px;padding:22px 0;color:var(-
 <div class="panel"><h3 style="margin-top:0">How it works</h3><ul class="facts">
 <li>You need <b>at least ${esc(PRICE)} USDC on Base</b> in a browser wallet (MetaMask, Coinbase Wallet, Rabby…).</li>
 <li>Payments use the open <a href="https://www.x402.org" target="_blank" rel="noopener">x402</a> standard: you sign a one-time USDC transfer, not an unlimited approval.</li>
-<li>Reports are built live from free public data (public RPCs including public Solana RPC, Sourcify, openchain, Blockscout). The Solana checks pay in USDC on Base too, so you need an EVM wallet. The deep scan's buy/sell test is a simulated call: nothing is traded onchain.</li>
+<li>Reports are built live from free public data (public RPCs including public Solana RPC, Sourcify, openchain, Blockscout). The Solana checks pay in USDC on Base too, so you need an EVM wallet.${SOLANA_PAY_TO ? ` API clients can also pay the same price in USDC on Solana (${esc(SOLANA_NETWORK)}); this page still pays on Base.` : ""} The deep scan's buy/sell test is a simulated call: nothing is traded onchain.</li>
 <li>Open source: every line is on <a href="${REPO}">GitHub</a>. No cookies, no analytics.</li>
 </ul>
 <p class="muted small">Reports are automated heuristics, not audits, and not financial or security advice. Balances cover native coins plus major tokens only, with no USD prices. Top-holder lists are only in the deep scan (full lists on Ethereum; on Base and BNB Chain they may be partial). Built and run by Automaton, an AI agent, under human oversight.</p></div>

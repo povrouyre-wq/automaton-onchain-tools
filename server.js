@@ -2,6 +2,7 @@
 import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { ExactSvmScheme } from "@x402/svm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
@@ -31,6 +32,13 @@ export { explain, approvals, inspect, contractRisk, urlSafety, gasSnapshot, ensR
 
 const PAY_TO = process.env.PAY_TO || "0x679af3a893eDd0AeF4ac4c7776Ba581b238C0717";
 const NETWORK = process.env.X402_NETWORK || "eip155:84532"; // Base Sepolia testnet by default
+// Second x402 exact option: native USDC on Solana mainnet. Omitted entirely unless SOLANA_PAY_TO is a base58 address.
+const SOLANA_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const SOLANA_PAY_TO = (() => { const v = (process.env.SOLANA_PAY_TO || "").trim(); if (!v) return ""; if (!isPubkey(v)) { console.warn("SOLANA_PAY_TO is not a Solana address; Solana payments omitted"); return ""; } return v; })();
+const solanaKind = () => ({ x402Version: 2, scheme: "exact", network: SOLANA_NETWORK });
+// Keep a facilitator response that lacks Solana from failing route init. The live kind (with extra.feePayer) is preferred.
+const withSolanaKind = supported => { if (!SOLANA_PAY_TO || !supported?.kinds?.length) return supported; if (supported.kinds.some(k => k?.x402Version === 2 && k.scheme === "exact" && k.network === SOLANA_NETWORK)) return supported; return { ...supported, kinds: [...supported.kinds, solanaKind()] }; };
+const routeAccepts = price => [{ scheme: "exact", price, network: NETWORK, payTo: PAY_TO }, ...(SOLANA_PAY_TO ? [{ scheme: "exact", price, network: SOLANA_NETWORK, payTo: SOLANA_PAY_TO }] : [])];
 const FACILITATOR = process.env.FACILITATOR_URL || "https://x402.org/facilitator";
 // Base Builder Code (ERC-8021): declared as app code `a` in every 402; the facilitator appends it to settlement calldata.
 const BUILDER = process.env.BUILDER_CODE || "bc_a1qq0mzd";
@@ -320,30 +328,37 @@ for (const r of ROUTES) if (r.desc.length > 500) console.error(`desc too long ($
 const app = express();
 app.set("trust proxy", true);
 // Never let a slow facilitator block the 402. On a cold instance the x402 middleware awaits facilitator /supported before answering
-// (default timeout 90 s, plus 429 back-off). We wait at most SUPPORTED_WAIT_MS, then fall back to the one kind we use; the exact-EVM
-// scheme ignores supported-kind details when building requirements, so the 402 is identical. verify/settle still go to the real facilitator.
+// (default timeout 90 s, plus 429 back-off). We wait at most SUPPORTED_WAIT_MS, then fall back. Exact EVM ignores supported-kind
+// details. Exact SVM copies extra.feePayer from the Solana kind, so a late live /supported replaces the fallback and the next 402
+// picks up the facilitator's fee payer. verify/settle still go to the real facilitator.
 const SUPPORTED_WAIT_MS = Number(process.env.SUPPORTED_WAIT_MS || 2000);
-export const SUPPORTED_FALLBACK = { kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK }], extensions: [], signers: {} };
-const facClient = new HTTPFacilitatorClient(facCfg); let supportedCache = null;
+export const SUPPORTED_FALLBACK = { kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK }, ...(SOLANA_PAY_TO ? [solanaKind()] : [])], extensions: [], signers: {} };
+const facClient = new HTTPFacilitatorClient(facCfg); let supportedCache = null, supportedInflight = null, server;
 const liveSupported = facClient.getSupported.bind(facClient);
 facClient.getSupported = () => {
-  if (supportedCache) return Promise.resolve(supportedCache);
-  const live = liveSupported().then(x => (supportedCache = x)); live.catch(e => console.warn("facilitator /supported unavailable, using fallback:", String(e?.message || e).slice(0, 160)));
-  return Promise.race([live, new Promise(r => setTimeout(() => r(SUPPORTED_FALLBACK), SUPPORTED_WAIT_MS).unref?.())]).catch(() => SUPPORTED_FALLBACK);
+  if (supportedCache) return Promise.resolve(withSolanaKind(supportedCache));
+  if (!supportedInflight) supportedInflight = liveSupported().then(x => (supportedCache = x)).catch(e => { supportedInflight = null; console.warn("facilitator /supported unavailable, using fallback:", String(e?.message || e).slice(0, 160)); throw e; });
+  let timedOut = false;
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { timedOut = true; resolve(withSolanaKind(SUPPORTED_FALLBACK)); }, SUPPORTED_WAIT_MS); timer.unref?.();
+    supportedInflight.then(x => { clearTimeout(timer); if (timedOut && server) setImmediate(() => server.initialize().catch(e => console.warn("facilitator support refresh failed:", String(e?.message || e).slice(0, 160)))); else if (!timedOut) resolve(withSolanaKind(x)); }).catch(() => { clearTimeout(timer); if (!timedOut) resolve(withSolanaKind(SUPPORTED_FALLBACK)); });
+  });
 };
 // Hard cap per paid call, well under the 60 s function limit. A timed-out call answers 504 and, being >= 400, is never settled (no charge).
 const ROUTE_DEADLINE_MS = Number(process.env.ROUTE_DEADLINE_MS || 25000);
 export const withDeadline = (p, ms = ROUTE_DEADLINE_MS) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error(`upstream timeout after ${ms} ms`), { status: 504 })), ms); })]).finally(() => clearTimeout(t)); };
-const server = new x402ResourceServer(facClient).register(NETWORK, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
+server = new x402ResourceServer(facClient).register(NETWORK, new ExactEvmScheme());
+if (SOLANA_PAY_TO) server.register(SOLANA_NETWORK, new ExactSvmScheme());
+server.registerExtension(bazaarResourceServerExtension).registerExtension(builderCodeResourceServerExtension);
 server.onBeforeSettle(async (ctx) => { // backfill resource if a client omits it, so the facilitator can catalog
   const p = ctx?.paymentPayload; if (!p || p.resource?.url) return;
   const tc = ctx.transportContext || {}; const path = tc.request?.path || tc.adapter?.getPath?.() || tc.path || "";
   const r = ROUTES.find(r => path === r.path); if (r) p.resource = { url: ORIGIN + r.path, description: r.desc, mimeType: "application/json" };
 });
 const routeValue = (r, req) => r.pathParam ? req.params[r.param] : req.query[r.param];
-const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"], lookupOnlyChains: LOOKUP_ONLY_CHAINS,
+const health = (_, res) => res.json({ ok: true, network: NETWORK, payTo: PAY_TO, ...(SOLANA_PAY_TO ? { solanaNetwork: SOLANA_NETWORK, solanaPayTo: SOLANA_PAY_TO } : {}), mcp: ORIGIN + "/mcp", openapi: ORIGIN + "/openapi.json", chains: [...Object.keys(CHAINS), "solana"], lookupOnlyChains: LOOKUP_ONLY_CHAINS,
   endpoints: ROUTES.map(r => ({ url: r.pathParam ? `${ORIGIN}${r.path.replace(/:([A-Za-z0-9_]+)/g, "<$1>")}` : `${ORIGIN}${r.path}?${r.param}=<${r.param}>`, price: r.price, description: r.desc })) });
-app.get("/health", health); mountShare(app, { ORIGIN }); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, health }); mountCheck(app, { ORIGIN, PAY_TO, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL, PRICE_SWEEP, PRICE_BUNDLE, PRICE_HONEYPOT, PRICE_VERDICT, PRICE_SAFE });
+app.get("/health", health); mountShare(app, { ORIGIN }); mountLanding(app, { ROUTES, ORIGIN, PAY_TO, SOLANA_PAY_TO, SOLANA_NETWORK, health }); mountCheck(app, { ORIGIN, PAY_TO, SOLANA_PAY_TO, SOLANA_NETWORK, PRICE: PRICE_PREMIUM, PRICE_DEEP, PRICE_SOL: PRICE_SMALL, PRICE_SWEEP, PRICE_BUNDLE, PRICE_HONEYPOT, PRICE_VERDICT, PRICE_SAFE });
 
 // Validate before charging: bare paymentless request -> 402 (discovery probes); bad input -> free 400.
 const hasPay = req => !!(req.get("payment-signature") || req.get("x-payment"));
@@ -371,7 +386,7 @@ for (const r of ROUTES) { const extras = routeExtras(r);
     : declareDiscoveryExtension({ method: "GET", input: { [r.param]: r.example, ...Object.fromEntries(extras.filter(e => e.example != null).map(e => [e.name, e.example])) },
       inputSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen), ...Object.fromEntries(extras.map(e => [e.name, prop(e.pattern, e.desc, e.maxLen)])) }, required: r.optional ? [] : [r.param] }, output: { example: r.out } });
   routeCfg["GET " + r.path] = {
-  accepts: [{ scheme: "exact", price: r.price, network: NETWORK, payTo: PAY_TO }], description: r.desc, mimeType: "application/json",
+  accepts: routeAccepts(r.price), description: r.desc, mimeType: "application/json",
   resource: ORIGIN + r.path, serviceName: r.name, tags: r.tags || (r.param === "url" ? ["security", "phishing", "url", "web"] : [r.tag || r.path.split("/")[2], "onchain", "evm", "crypto"]),
   extensions: { ...builderExt, ...discovery } }; }
 // Mirror the PAYMENT-REQUIRED header into the 402 body (it is otherwise "{}") so indexers and clients that read the body (x402 v1 style) see the same accepts[].
@@ -405,12 +420,12 @@ app.get("/free/launches", async (req, res) => {
   catch (e) { res.status(503).json({ error: "upstream error", detail: String(e.message).slice(0, 200) }); }
 });
 app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
-  info: { title: "Automaton Onchain & URL Tools", version: "1.19.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
-    description: "Pay-per-call utilities via x402 (USDC on Base): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.02 quick token verdict for those three chains and Solana (SAFE / CAUTION / AVOID, bundling sellability, tax, owner powers, LP burn/lock and holder concentration; Solana: mint/freeze authority, metadata, Token-2022 extensions, holders and DEX liquidity), each with a one-line take and a share page + PNG card, a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), a $0.02 BNB Chain smart-money feed (wallets that repeatedly bought early into four.meme and PancakeSwap launches that then ran, plus one wallet's recent buys; free public RPC logs only, about 2 days, reported as lookback_hours), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs), plus a $0.005 safe-to-send pre-transfer recipient check on all 8 chains (safe / caution / danger: address-poisoning lookalikes, free scam/drainer flags, contract token handling, fresh empty addresses; every signal is a heuristic). Batch endpoints are $0.05 each for up to 20 inputs: GET /v1/{chain}/approvals/batch on every EVM chain the single approvals route supports, GET /v1/{chain}/safe-to-send/batch on the same chains as safe-to-send, including Solana, and GET /v1/url-safety/batch for the same checks as the $0.005 URL safety route. One result per input; invalid lists are a free 400 before payment.",
-    "x-guidance": "GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on eip155:8453 (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools)." },
+  info: { title: "Automaton Onchain & URL Tools", version: "1.20.0", contact: { name: "Automaton", url: ORIGIN + "/health" },
+    description: `Pay-per-call utilities via x402 (${SOLANA_PAY_TO ? "USDC on Base, or the same USD price in USDC on Solana mainnet" : "USDC on Base"}): tx explainer, token approvals, address inspector and contract-risk heuristics for Base, Ethereum and BNB Smart Chain, plus the same four lookups for Arbitrum, Optimism, Polygon and Avalanche C-Chain at $0.005 each (with a copycat-token flag), a Solana token check (SPL, Token-2022, pump.fun), Solana address lookups and token-delegate (approval) checks at $0.005 each, URL safety checks, plus $0.25 premium wallet and token reports and a $1.50 token deep scan (honeypot buy/sell simulation, liquidity, LP lock, holder concentration), and a new-token launch feed for Base, BNB Chain (four.meme, PancakeSwap) and Solana/pump.fun with automated risk flags on each launch ($0.01 per chain, $0.02 for all three; free delayed sample at GET /free/launches), plus a $0.01 honeypot check for Base, Ethereum and BNB Chain (simulated buy + sell: sellable yes/no, buy and sell tax), a $0.02 quick token verdict for those three chains and Solana (SAFE / CAUTION / AVOID, bundling sellability, tax, owner powers, LP burn/lock and holder concentration; Solana: mint/freeze authority, metadata, Token-2022 extensions, holders and DEX liquidity), each with a one-line take and a share page + PNG card, a $0.01 BNB Chain bundle + sniper check for four.meme / PancakeSwap launches (launch-block buyers, bundled txs, shared funders, % of supply grabbed and still held, dev in cluster), a $0.02 BNB Chain smart-money feed (wallets that repeatedly bought early into four.meme and PancakeSwap launches that then ran, plus one wallet's recent buys; free public RPC logs only, about 2 days, reported as lookback_hours), plus a $0.02 all-chain approval sweep (live ERC-20 allowances and NFT approvals on all 7 EVM chains, risk-ranked, with ready-to-sign revoke txs), plus a $0.005 safe-to-send pre-transfer recipient check on all 8 chains (safe / caution / danger: address-poisoning lookalikes, free scam/drainer flags, contract token handling, fresh empty addresses; every signal is a heuristic). Batch endpoints are $0.05 each for up to 20 inputs: GET /v1/{chain}/approvals/batch on every EVM chain the single approvals route supports, GET /v1/{chain}/safe-to-send/batch on the same chains as safe-to-send, including Solana, and GET /v1/url-safety/batch for the same checks as the $0.005 URL safety route. One result per input; invalid lists are a free 400 before payment.`,
+    "x-guidance": `GET an endpoint with its query param; answer the 402 with an x402 v2 exact-scheme USDC payment on ${SOLANA_PAY_TO ? `eip155:8453 (default, first accepts entry) or ${SOLANA_NETWORK}` : "eip155:8453"} (PAYMENT-SIGNATURE header). Invalid input is rejected with 400 before any charge. MCP: POST /mcp (streamable HTTP, paid tools).` },
   servers: [{ url: ORIGIN }],
   paths: Object.fromEntries(ROUTES.map(r => [r.path.replace(/:([A-Za-z0-9_]+)/g, "{$1}"), { get: { operationId: r.key, summary: r.name, description: r.desc,
-    "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: r.price.replace("$", "") }, protocols: [{ x402: {} }] },
+    "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: r.price.replace("$", "") }, protocols: [{ x402: {} }], ...(SOLANA_PAY_TO ? { networks: [NETWORK, SOLANA_NETWORK] } : {}) },
     parameters: [...(r.pathParam ? [{ name: r.param, in: "path", required: true, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }] : [{ name: r.param, in: "query", required: !r.optional, description: r.pdesc, schema: { type: "string", pattern: r.pattern } }]), ...routeExtras(r).map(e => ({ name: e.name, in: "query", required: false, description: e.desc, schema: { type: "string", pattern: e.pattern } }))],
     responses: { 200: { description: "OK", content: { "application/json": { schema: { type: "object" }, example: r.out } } }, 400: { description: "Invalid input (no charge)" }, 402: { description: "Payment Required" } } } }])) }));
 app.get("/.well-known/mcp-registry-auth", (_, res) => res.type("text/plain").send("v=MCPv1; k=ed25519; p=Gkkq+F+PxBJofd16J+xJpg6E+nXM7MWO29cD3+IKe0U="));
@@ -423,7 +438,7 @@ const ERC8004_AGENT_IDS = [1211188]; // register() tx 0xc5be431878cf94d4c7e8db75
 const agentRegistration = () => ({
   type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   name: "Automaton",
-  description: `Automaton is an autonomous AI agent (human operator: Michael Rouyre) selling pay-per-call onchain safety checks over x402, USDC on Base (eip155:8453), payTo ${PAY_TO}. ${ROUTES.length} paid HTTP routes, also exposed as paid MCP tools: tx explainer, token approvals, address inspector and contract-risk heuristics on Base, Ethereum, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche; Solana token, address and delegate checks; URL safety and a URL safety batch (up to 20 links, GET /v1/url-safety/batch); honeypot sim, quick token verdict, deep scan, wallet/token reports, approval sweep, safe-to-send recipient check, batch checks (up to 20 addresses or URLs), launch feed and BNB smart-money feed. Prices $0.005 to $1.50 per call. How to pay: GET an endpoint, answer the HTTP 402 with an x402 v2 exact-scheme USDC payment on Base (PAYMENT-SIGNATURE header). Invalid input gets a free 400 before any charge. Full list with prices: ${ORIGIN}/openapi.json. Results are heuristics, not guarantees.`,
+  description: `Automaton is an autonomous AI agent (human operator: Michael Rouyre) selling pay-per-call onchain safety checks over x402, ${SOLANA_PAY_TO ? `USDC on Base (eip155:8453, payTo ${PAY_TO}) or Solana (${SOLANA_NETWORK}, payTo ${SOLANA_PAY_TO})` : `USDC on Base (eip155:8453), payTo ${PAY_TO}`}. ${ROUTES.length} paid HTTP routes, also exposed as paid MCP tools: tx explainer, token approvals, address inspector and contract-risk heuristics on Base, Ethereum, BNB Chain, Arbitrum, Optimism, Polygon and Avalanche; Solana token, address and delegate checks; URL safety and a URL safety batch (up to 20 links, GET /v1/url-safety/batch); honeypot sim, quick token verdict, deep scan, wallet/token reports, approval sweep, safe-to-send recipient check, batch checks (up to 20 addresses or URLs), launch feed and BNB smart-money feed. Prices $0.005 to $1.50 per call. ${SOLANA_PAY_TO ? `How to pay: GET an endpoint, answer the HTTP 402 with an x402 v2 exact-scheme USDC payment on Base (eip155:8453, the first accepts entry) or Solana (${SOLANA_NETWORK}) (PAYMENT-SIGNATURE header).` : "How to pay: GET an endpoint, answer the HTTP 402 with an x402 v2 exact-scheme USDC payment on Base (PAYMENT-SIGNATURE header)."} Invalid input gets a free 400 before any charge. Full list with prices: ${ORIGIN}/openapi.json. Results are heuristics, not guarantees.`,
   image: ORIGIN + "/agent-icon.svg",
   services: [
     { name: "web", endpoint: ORIGIN + "/" },
@@ -432,12 +447,13 @@ const agentRegistration = () => ({
     { name: "x402", endpoint: ORIGIN + "/.well-known/x402", version: "2" },
     { name: "source", endpoint: "https://github.com/povrouyre-wq/automaton-onchain-tools" },
     { name: "agentWallet", endpoint: `eip155:8453:${PAY_TO}` },
+    ...(SOLANA_PAY_TO ? [{ name: "agentWalletSolana", endpoint: `${SOLANA_NETWORK}:${SOLANA_PAY_TO}` }] : []),
   ],
   x402Support: true,
   active: true,
   registrations: ERC8004_AGENT_IDS.map(agentId => ({ agentId, agentRegistry: `eip155:8453:${ERC8004_IDENTITY_REGISTRY}` })),
   supportedTrust: ["reputation"],
-  endpoints: ROUTES.map(r => ({ path: r.path, method: "GET", price: r.price, currency: "USDC", network: NETWORK, name: r.name })),
+  endpoints: ROUTES.map(r => ({ path: r.path, method: "GET", price: r.price, currency: "USDC", network: NETWORK, ...(SOLANA_PAY_TO ? { networks: [NETWORK, SOLANA_NETWORK] } : {}), name: r.name })),
 });
 const sendAgentRegistration = (_, res) => { res.set("cache-control", "public, max-age=300"); res.set("access-control-allow-origin", "*"); res.json(agentRegistration()); };
 app.get("/.well-known/agent-registration.json", sendAgentRegistration);
@@ -448,23 +464,23 @@ app.get("/agent-icon.svg", (_, res) => { res.set("cache-control", "public, max-a
 let mcpReady;
 async function buildMcp() {
   await server.initialize();
-  const wrap = {};
-  for (const r of ROUTES) { const extras = routeExtras(r); wrap[r.key] = createPaymentWrapper(server, {
-    accepts: await server.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo: PAY_TO, price: r.price }),
-    resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" || r.param === "urls" ? ["security"] : ["onchain"])] },
-    extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen), ...Object.fromEntries(extras.map(e => [e.name, prop(e.pattern, e.desc, e.maxLen)])) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...Object.fromEntries(extras.filter(e => e.example != null).map(e => [e.name, e.example])) } }) } }); }
-  return () => {
+  return async () => {
     const m = new McpServer({ name: "automaton-onchain-tools", version: "1.19.0" });
     const txt = o => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
-    for (const r of ROUTES) { const zz = r.list?.parse ? z.string().max(r.maxLen || 42000).refine(v => { try { r.list.parse(v); return true; } catch { return false; } }) : r.param === "url" ? z.string().min(4).max(r.maxLen || 2048) : z.string().regex(r.re);
-      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...Object.fromEntries(routeExtras(r).map(e => [e.name, z.string().regex(e.re).optional()])) }, wrap[r.key](async a => { try { return txt(await withDeadline(r.fn(a[r.param], a), r.deadline)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
+    for (const r of ROUTES) { const extras = routeExtras(r); const zz = r.list?.parse ? z.string().max(r.maxLen || 42000).refine(v => { try { r.list.parse(v); return true; } catch { return false; } }) : r.param === "url" ? z.string().min(4).max(r.maxLen || 2048) : z.string().regex(r.re);
+      const accepts = await server.buildPaymentRequirementsFromOptions(routeAccepts(r.price), {});
+      const wrap = createPaymentWrapper(server, {
+        accepts,
+        resource: { url: `${ORIGIN}/mcp#${r.key}`, description: r.desc, mimeType: "application/json", serviceName: r.name, tags: ["mcp", ...(r.param === "url" || r.param === "urls" ? ["security"] : ["onchain"])] },
+        extensions: { ...builderExt, ...declareDiscoveryExtension({ toolName: r.key, description: r.desc, inputSchema: { properties: { [r.param]: prop(r.pattern, r.pdesc, r.maxLen), ...Object.fromEntries(extras.map(e => [e.name, prop(e.pattern, e.desc, e.maxLen)])) }, required: r.optional ? [] : [r.param] }, example: { [r.param]: r.example, ...Object.fromEntries(extras.filter(e => e.example != null).map(e => [e.name, e.example])) } }) } });
+      m.tool(r.key, `${r.desc} Costs ${r.price}.`, { [r.param]: r.optional ? zz.optional() : zz, ...Object.fromEntries(routeExtras(r).map(e => [e.name, z.string().regex(e.re).optional()])) }, wrap(async a => { try { return txt(await withDeadline(r.fn(a[r.param], a), r.deadline)); } catch (e) { return { isError: true, ...txt({ error: String(e.shortMessage || e.message).slice(0, 300) }) }; } })); }
     m.tool("ping", "Free health check.", {}, async () => txt({ ok: true }));
     return m;
   };
 }
 app.post("/mcp", express.json({ limit: "64kb" }), async (req, res, next) => {
   try { mcpReady ??= buildMcp(); const make = await mcpReady;
-    const m = make(); const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    const m = await make(); const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => { t.close(); m.close(); }); await m.connect(t); await t.handleRequest(req, res, req.body);
   } catch (e) { mcpReady = undefined; next(e); }
 });
