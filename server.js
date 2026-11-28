@@ -430,6 +430,12 @@ app.get("/openapi.json", (_, res) => res.json({ openapi: "3.1.0",
     responses: { 200: { description: "OK", content: { "application/json": { schema: { type: "object" }, example: r.out } } }, 400: { description: "Invalid input (no charge)" }, 402: { description: "Payment Required" } } } }])) }));
 app.get("/.well-known/mcp-registry-auth", (_, res) => res.type("text/plain").send("v=MCPv1; k=ed25519; p=Gkkq+F+PxBJofd16J+xJpg6E+nXM7MWO29cD3+IKe0U="));
 app.get("/.well-known/x402", (_, res) => res.json({ version: 1, resources: ROUTES.map(r => ORIGIN + r.path) }));
+const INDEX402_VERIFY_HASH = "43904ba343db81d3cf3670f6d653c8f1a95564d18004af35f815e8adb54c02c6";
+app.get("/.well-known/402index-verify.txt", (_, res) => {
+  res.set("cache-control", "no-store");
+  res.type("text/plain; charset=utf-8");
+  res.end(INDEX402_VERIFY_HASH);
+});
 
 // ---- ERC-8004 agent registration file (Identity Registry on Base) ----
 // agentURI on-chain points at ORIGIN + "/.well-known/agent-registration.json"; /agent-card.json is an alias.
